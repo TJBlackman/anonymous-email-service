@@ -4,3 +4,4 @@ Use this command to enter WSL2: `wsl -u trevor`
 WSL2 is running Ubuntu 22.04.4
 This is a greenfield project with 0 users. Anything can be changed at any time.
 Git commands should be run in windows powershell, not WSL2.
+Read the entire README.md file.

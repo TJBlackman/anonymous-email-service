@@ -18,17 +18,25 @@ This repository contains the current runtime scaffold for a disposable email ser
 
 ## Configuration
 
-The server supports these environment variables:
+The server reads configuration from environment variables at startup. `DOMAIN` is required. All other values have defaults, and invalid values stop startup immediately instead of falling back silently.
 
-- `DOMAIN` required: email domain for generated inbox addresses
-- `SMTP_LISTEN_ADDR` default: `:25`
-- `HTTP_LISTEN_ADDR` default: `:8080`
-- `DATABASE_PATH` default: `./data/mail.db`
-- `INBOX_TTL_HOURS` default: `24`
-- `MAX_EMAIL_SIZE_MB` default: `10`
-- `MAX_ATTACHMENT_MB` default: `5`
-- `CLEANUP_INTERVAL_MIN` default: `15`
-- `LOG_LEVEL` default: `info`
+- `DOMAIN`: required email domain for generated inbox addresses
+- `SMTP_LISTEN_ADDR`: default `:25`
+- `HTTP_LISTEN_ADDR`: default `:8080`
+- `DATABASE_PATH`: default `./data/mail.db`
+- `INBOX_TTL_HOURS`: default `24`
+- `MAX_EMAIL_SIZE_MB`: default `10`
+- `MAX_ATTACHMENT_MB`: default `5`
+- `CLEANUP_INTERVAL_MIN`: default `15`
+- `LOG_LEVEL`: default `info`
+
+Validation notes:
+
+- `DOMAIN` is trimmed, normalized to lowercase, and must not contain `@`, whitespace, leading dots, trailing dots, or consecutive dots
+- `SMTP_LISTEN_ADDR` and `HTTP_LISTEN_ADDR` must be valid `host:port` values such as `:8080` or `127.0.0.1:2525`
+- `INBOX_TTL_HOURS`, `MAX_EMAIL_SIZE_MB`, `MAX_ATTACHMENT_MB`, and `CLEANUP_INTERVAL_MIN` must be positive integers
+- `MAX_ATTACHMENT_MB` cannot exceed `MAX_EMAIL_SIZE_MB`
+- `LOG_LEVEL` must be one of `debug`, `info`, `warn`, or `error`
 
 ## Run Locally
 

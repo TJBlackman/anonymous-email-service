@@ -1,12 +1,15 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Config struct {
@@ -21,24 +24,66 @@ type Config struct {
 	LogLevel          string
 }
 
+const (
+	defaultSMTPListenAddr  = ":25"
+	defaultHTTPListenAddr  = ":8080"
+	defaultDatabasePath    = "./data/mail.db"
+	defaultInboxTTLHours   = 24
+	defaultMaxEmailSizeMB  = 10
+	defaultMaxAttachSizeMB = 5
+	defaultCleanupMins     = 15
+	defaultLogLevel        = "info"
+)
+
+var allowedLogLevels = map[string]struct{}{
+	"debug": {},
+	"info":  {},
+	"warn":  {},
+	"error": {},
+}
+
 func Load() (*Config, error) {
-	cfg := &Config{
-		Domain:            strings.TrimSpace(os.Getenv("DOMAIN")),
-		SMTPListenAddr:    getEnvOrDefault("SMTP_LISTEN_ADDR", ":25"),
-		HTTPListenAddr:    getEnvOrDefault("HTTP_LISTEN_ADDR", ":8080"),
-		DatabasePath:      getEnvOrDefault("DATABASE_PATH", "./data/mail.db"),
-		InboxTTL:          time.Duration(getEnvIntOrDefault("INBOX_TTL_HOURS", 24)) * time.Hour,
-		MaxEmailSize:      int64(getEnvIntOrDefault("MAX_EMAIL_SIZE_MB", 10)) * 1024 * 1024,
-		MaxAttachmentSize: int64(getEnvIntOrDefault("MAX_ATTACHMENT_MB", 5)) * 1024 * 1024,
-		CleanupInterval:   time.Duration(getEnvIntOrDefault("CLEANUP_INTERVAL_MIN", 15)) * time.Minute,
-		LogLevel:          getEnvOrDefault("LOG_LEVEL", "info"),
+	domain, domainErr := loadDomain()
+	smtpListenAddr, smtpErr := loadListenAddr("SMTP_LISTEN_ADDR", defaultSMTPListenAddr)
+	httpListenAddr, httpErr := loadListenAddr("HTTP_LISTEN_ADDR", defaultHTTPListenAddr)
+	databasePath, databasePathErr := loadDatabasePath()
+	inboxTTLHours, inboxTTLErr := loadPositiveInt("INBOX_TTL_HOURS", defaultInboxTTLHours)
+	maxEmailSizeMB, maxEmailSizeErr := loadPositiveInt("MAX_EMAIL_SIZE_MB", defaultMaxEmailSizeMB)
+	maxAttachmentSizeMB, maxAttachmentSizeErr := loadPositiveInt("MAX_ATTACHMENT_MB", defaultMaxAttachSizeMB)
+	cleanupIntervalMins, cleanupIntervalErr := loadPositiveInt("CLEANUP_INTERVAL_MIN", defaultCleanupMins)
+	logLevel, logLevelErr := loadLogLevel()
+
+	errs := collectErrors(
+		domainErr,
+		smtpErr,
+		httpErr,
+		databasePathErr,
+		inboxTTLErr,
+		maxEmailSizeErr,
+		maxAttachmentSizeErr,
+		cleanupIntervalErr,
+		logLevelErr,
+	)
+
+	if maxEmailSizeErr == nil && maxAttachmentSizeErr == nil && maxAttachmentSizeMB > maxEmailSizeMB {
+		errs = append(errs, fmt.Errorf("MAX_ATTACHMENT_MB cannot exceed MAX_EMAIL_SIZE_MB"))
 	}
 
-	if cfg.Domain == "" {
-		return nil, fmt.Errorf("DOMAIN environment variable is required")
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
 	}
 
-	return cfg, nil
+	return &Config{
+		Domain:            domain,
+		SMTPListenAddr:    smtpListenAddr,
+		HTTPListenAddr:    httpListenAddr,
+		DatabasePath:      databasePath,
+		InboxTTL:          time.Duration(inboxTTLHours) * time.Hour,
+		MaxEmailSize:      int64(maxEmailSizeMB) * 1024 * 1024,
+		MaxAttachmentSize: int64(maxAttachmentSizeMB) * 1024 * 1024,
+		CleanupInterval:   time.Duration(cleanupIntervalMins) * time.Minute,
+		LogLevel:          logLevel,
+	}, nil
 }
 
 func LogLevel(level string) slog.Level {
@@ -54,24 +99,84 @@ func LogLevel(level string) slog.Level {
 	}
 }
 
-func getEnvOrDefault(key, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
+func loadDomain() (string, error) {
+	domain := strings.ToLower(strings.TrimSpace(os.Getenv("DOMAIN")))
+	switch {
+	case domain == "":
+		return "", fmt.Errorf("DOMAIN is required")
+	case strings.Contains(domain, "@"):
+		return "", fmt.Errorf("DOMAIN must not contain @")
+	case strings.IndexFunc(domain, unicode.IsSpace) >= 0:
+		return "", fmt.Errorf("DOMAIN must not contain whitespace")
+	case strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.Contains(domain, ".."):
+		return "", fmt.Errorf("DOMAIN must not start or end with '.' or contain consecutive dots")
 	}
-	return value
+
+	return domain, nil
 }
 
-func getEnvIntOrDefault(key string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
+func loadListenAddr(key, fallback string) (string, error) {
+	value, _ := loadTrimmedString(key, fallback, true)
+	if _, port, err := net.SplitHostPort(value); err != nil || strings.TrimSpace(port) == "" {
+		return "", fmt.Errorf("%s must be a valid host:port address", key)
+	}
+	return value, nil
+}
+
+func loadDatabasePath() (string, error) {
+	value, usedDefault := loadTrimmedString("DATABASE_PATH", defaultDatabasePath, false)
+	if !usedDefault && value == "" {
+		return "", fmt.Errorf("DATABASE_PATH must not be blank")
+	}
+	return value, nil
+}
+
+func loadLogLevel() (string, error) {
+	value, _ := loadTrimmedString("LOG_LEVEL", defaultLogLevel, true)
+	value = strings.ToLower(value)
+	if _, ok := allowedLogLevels[value]; !ok {
+		return "", fmt.Errorf("LOG_LEVEL must be one of: debug, info, warn, error")
+	}
+	return value, nil
+}
+
+func loadPositiveInt(key string, fallback int) (int, error) {
+	value, usedDefault := loadTrimmedString(key, strconv.Itoa(fallback), true)
+	if !usedDefault && value == "" {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
 	}
 
 	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
 	}
 
-	return parsed
+	return parsed, nil
+}
+
+func loadTrimmedString(key, fallback string, allowBlankAsDefault bool) (string, bool) {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback, true
+	}
+
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		if allowBlankAsDefault {
+			return fallback, true
+		}
+		return "", false
+	}
+
+	return trimmed, false
+}
+
+func collectErrors(errs ...error) []error {
+	var collected []error
+	for _, err := range errs {
+		if err != nil {
+			collected = append(collected, err)
+		}
+	}
+	return collected
 }
