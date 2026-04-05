@@ -14,6 +14,7 @@ import (
 	"anonymous-email-service/internal/repository"
 	appsmtp "anonymous-email-service/internal/smtp"
 	"anonymous-email-service/internal/web"
+	"anonymous-email-service/internal/worker"
 	gosmtp "github.com/emersion/go-smtp"
 )
 
@@ -40,7 +41,10 @@ func run() error {
 	}
 	defer repo.Close()
 
-	handler, err := web.RegisterRoutesWithDomain(repo, logger, "templates/*.gohtml", cfg.Domain)
+	handler, err := web.RegisterRoutes(repo, logger, "templates", web.Options{
+		Domain:   cfg.Domain,
+		InboxTTL: cfg.InboxTTL,
+	})
 	if err != nil {
 		return err
 	}
@@ -51,11 +55,13 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	smtpServer := appsmtp.NewServer(repo, cfg, logger)
+	cleanupWorker := worker.NewCleanupWorker(repo, cfg.CleanupInterval, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	serverErr := make(chan error, 2)
+	go cleanupWorker.Start(ctx)
 	go func() {
 		logger.Info("http server listening", "addr", cfg.HTTPListenAddr, "domain", cfg.Domain)
 		err := httpServer.ListenAndServe()
@@ -94,6 +100,7 @@ func run() error {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	cleanupWorker.Stop()
 
 	var firstErr error
 	for i := 0; i < 2; i++ {

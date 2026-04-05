@@ -1,5 +1,32 @@
-{{define "email-content"}}
+{{define "content"}}
+<section class="panel email-meta">
+    <p><strong>From:</strong> {{if .Email.SenderName}}{{.Email.SenderName}} &lt;{{.Email.Sender}}&gt;{{else}}{{.Email.Sender}}{{end}}</p>
+    <p><strong>To:</strong> {{.Email.Recipient}}</p>
+    <p><strong>Received:</strong> {{.Email.ReceivedAt.Format "2006-01-02 15:04:05 MST"}}</p>
+    <p><strong>Subject:</strong> {{.Email.Subject}}</p>
+</section>
+
+<section class="panel email-body">
+    {{if .RenderedBodyIsHTML}}
+    <p class="muted">HTML-only message shown as escaped markup for safety.</p>
+    {{end}}
+    <pre>{{.RenderedBody}}</pre>
+</section>
+
+{{if .Attachments}}
 <section class="panel">
-    <p>Email rendering is not implemented yet.</p>
+    <h2>Attachments</h2>
+    <ul class="attachment-list">
+        {{range .Attachments}}
+        <li><a href="/email/{{$.Email.ID}}/attachment/{{.ID}}">{{.Filename}}</a> <span class="muted">({{.SizeBytes}} bytes)</span></li>
+        {{end}}
+    </ul>
+</section>
+{{end}}
+
+<section class="panel">
+    <form method="post" action="/email/{{.Email.ID}}/delete">
+        <button type="submit">Delete Email</button>
+    </form>
 </section>
 {{end}}

@@ -2,8 +2,14 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"anonymous-email-service/internal/models"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
 )
 
 type Repository interface {
@@ -14,6 +20,7 @@ type Repository interface {
 	DeleteExpiredInboxes(ctx context.Context) (int64, error)
 
 	SaveEmail(ctx context.Context, email *models.Email) error
+	SaveInboundMessage(ctx context.Context, email *models.Email, attachments []*models.Attachment) error
 	GetEmailsByInboxID(ctx context.Context, inboxID int64, limit, offset int) ([]*models.Email, error)
 	GetEmailByID(ctx context.Context, inboxID, emailID int64) (*models.Email, error)
 	MarkEmailAsRead(ctx context.Context, emailID int64) error

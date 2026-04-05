@@ -15,10 +15,21 @@ type CleanupWorker struct {
 	done     chan struct{}
 }
 
+func NewCleanupWorker(repo repository.Repository, interval time.Duration, logger *slog.Logger) *CleanupWorker {
+	return &CleanupWorker{
+		repo:     repo,
+		interval: interval,
+		logger:   logger,
+		done:     make(chan struct{}),
+	}
+}
+
 func (w *CleanupWorker) Start(ctx context.Context) {
 	if w.done == nil {
 		w.done = make(chan struct{})
 	}
+
+	w.runCleanup(ctx)
 
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
@@ -30,9 +41,7 @@ func (w *CleanupWorker) Start(ctx context.Context) {
 		case <-w.done:
 			return
 		case <-ticker.C:
-			if w.logger != nil {
-				w.logger.Debug("cleanup tick skipped", "reason", "worker not implemented")
-			}
+			w.runCleanup(ctx)
 		}
 	}
 }
@@ -46,5 +55,19 @@ func (w *CleanupWorker) Stop() {
 	case <-w.done:
 	default:
 		close(w.done)
+	}
+}
+
+func (w *CleanupWorker) runCleanup(ctx context.Context) {
+	deleted, err := w.repo.DeleteExpiredInboxes(ctx)
+	if err != nil {
+		if w.logger != nil {
+			w.logger.Error("cleanup failed", "error", err)
+		}
+		return
+	}
+
+	if deleted > 0 && w.logger != nil {
+		w.logger.Info("cleanup complete", "deleted_inboxes", deleted)
 	}
 }

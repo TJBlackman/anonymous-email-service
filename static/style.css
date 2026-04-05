@@ -28,6 +28,10 @@ body {
 }
 
 .hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: end;
   margin-bottom: 1.5rem;
 }
 
@@ -45,16 +49,174 @@ body {
   line-height: 1;
 }
 
+.hero-meta {
+  text-align: right;
+}
+
+.meta-label,
+.section-label,
+.muted {
+  color: var(--muted);
+}
+
+.meta-label,
+.section-label {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.meta-value,
+.address {
+  margin: 0;
+  font-size: 1rem;
+  word-break: break-word;
+}
+
 .panel {
   padding: 1.5rem;
   border: 1px solid var(--border);
   border-radius: 1rem;
   background: rgba(255, 250, 240, 0.92);
   box-shadow: 0 18px 40px rgba(31, 26, 23, 0.08);
+  margin-bottom: 1rem;
 }
 
 code {
   padding: 0.1rem 0.35rem;
   border-radius: 0.3rem;
   background: rgba(20, 83, 45, 0.08);
+}
+
+.inbox-summary,
+.section-heading,
+.email-row,
+.summary-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.summary-actions {
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.address {
+  font-size: clamp(1.2rem, 3vw, 1.75rem);
+  font-weight: 700;
+}
+
+.section-heading {
+  align-items: baseline;
+  margin-bottom: 1rem;
+}
+
+.section-heading h2,
+.panel h2 {
+  margin: 0;
+}
+
+.email-list,
+.attachment-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.email-row {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  padding: 0.9rem 0;
+}
+
+.email-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.email-link {
+  color: inherit;
+  text-decoration: none;
+  display: grid;
+  gap: 0.2rem;
+  flex: 1;
+}
+
+.email-subject {
+  font-weight: 700;
+}
+
+.email-sender,
+.email-time {
+  color: var(--muted);
+}
+
+.is-unread .email-subject::before {
+  content: "• ";
+  color: var(--accent);
+}
+
+.badge {
+  white-space: nowrap;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(20, 83, 45, 0.1);
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+
+.empty-state {
+  margin: 0;
+}
+
+.email-meta p,
+.summary-actions p {
+  margin: 0 0 0.5rem;
+}
+
+.email-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Courier New", monospace;
+}
+
+button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fffaf0;
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+}
+
+a {
+  color: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .shell {
+    margin: 2rem auto;
+  }
+
+  .hero,
+  .inbox-summary,
+  .section-heading,
+  .email-row,
+  .summary-actions {
+    display: block;
+  }
+
+  .hero-meta,
+  .summary-actions {
+    text-align: left;
+  }
+
+  .badge {
+    display: inline-block;
+    margin-top: 0.5rem;
+  }
 }

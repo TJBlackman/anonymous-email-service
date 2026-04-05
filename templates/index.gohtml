@@ -1,7 +1,38 @@
 {{define "content"}}
+<section class="panel inbox-summary">
+    <div>
+        <p class="section-label">Disposable address</p>
+        <p class="address">{{.Inbox.Address}}</p>
+        <p class="muted">Expires {{.Inbox.ExpiresAt.Format "2006-01-02 15:04:05 MST"}}</p>
+    </div>
+    <div class="summary-actions">
+        <p><strong>{{.UnreadCount}}</strong> unread</p>
+        <form method="post" action="/inbox/new">
+            <button type="submit">Generate New Inbox</button>
+        </form>
+    </div>
+</section>
+
 <section class="panel">
-    <p>{{.Placeholder}}</p>
-    <p>The scaffold includes the planned HTTP routes, templates, migration, and package layout.</p>
-    <p>Use <code>/health</code> to verify the server is up.</p>
+    <div class="section-heading">
+        <h2>Recent Emails</h2>
+        <a href="/api/emails">JSON feed</a>
+    </div>
+    {{if .Emails}}
+    <ul class="email-list">
+        {{range .Emails}}
+        <li class="email-row {{if not .IsRead}}is-unread{{end}}">
+            <a href="/email/{{.ID}}" class="email-link">
+                <span class="email-subject">{{.Subject}}</span>
+                <span class="email-sender">{{if .SenderName}}{{.SenderName}} &lt;{{.Sender}}&gt;{{else}}{{.Sender}}{{end}}</span>
+                <span class="email-time">{{.ReceivedAt.Format "2006-01-02 15:04:05 MST"}}</span>
+            </a>
+            {{if .HasAttachments}}<span class="badge">Attachments</span>{{end}}
+        </li>
+        {{end}}
+    </ul>
+    {{else}}
+    <p class="empty-state">No email has arrived yet. Send a message to this address and refresh.</p>
+    {{end}}
 </section>
 {{end}}

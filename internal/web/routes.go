@@ -1,18 +1,34 @@
 package web
 
 import (
+	"html/template"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"time"
 
 	"anonymous-email-service/internal/repository"
 )
 
-func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templatePattern string) (http.Handler, error) {
-	return RegisterRoutesWithDomain(repo, logger, templatePattern, "example.test")
+type Options struct {
+	Domain   string
+	InboxTTL time.Duration
 }
 
-func RegisterRoutesWithDomain(repo repository.Repository, logger *slog.Logger, templatePattern, domain string) (http.Handler, error) {
-	templates, err := parseTemplates(templatePattern)
+type templateSet struct {
+	index *template.Template
+	email *template.Template
+}
+
+type app struct {
+	repo      repository.Repository
+	logger    *slog.Logger
+	templates templateSet
+	options   Options
+}
+
+func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templateDir string, options Options) (http.Handler, error) {
+	templates, err := parseTemplates(templateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -21,17 +37,44 @@ func RegisterRoutesWithDomain(repo repository.Repository, logger *slog.Logger, t
 		repo:      repo,
 		logger:    logger,
 		templates: templates,
+		options:   options,
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", app.HandleHealth)
-	mux.HandleFunc("GET /", app.HandleIndex)
-	mux.HandleFunc("GET /email/{id}", app.HandleViewEmail)
-	mux.HandleFunc("GET /email/{id}/attachment/{aid}", app.HandleAttachment)
-	mux.HandleFunc("POST /email/{id}/delete", app.HandleDeleteEmail)
-	mux.HandleFunc("POST /inbox/new", app.HandleNewInbox)
-	mux.HandleFunc("GET /api/emails", app.HandleAPIEmails)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	root := http.NewServeMux()
+	root.HandleFunc("GET /health", app.HandleHealth)
+	root.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 
-	return SessionMiddleware(repo, domain)(mux), nil
+	inboxMux := http.NewServeMux()
+	inboxMux.HandleFunc("GET /", app.HandleIndex)
+	inboxMux.HandleFunc("GET /email/{id}", app.HandleViewEmail)
+	inboxMux.HandleFunc("GET /email/{id}/attachment/{aid}", app.HandleAttachment)
+	inboxMux.HandleFunc("POST /email/{id}/delete", app.HandleDeleteEmail)
+	inboxMux.HandleFunc("POST /inbox/new", app.HandleNewInbox)
+	inboxMux.HandleFunc("GET /api/emails", app.HandleAPIEmails)
+
+	root.Handle("/", SessionMiddleware(app)(inboxMux))
+	return root, nil
+}
+
+func parseTemplates(templateDir string) (templateSet, error) {
+	if templateDir == "" {
+		templateDir = "templates"
+	}
+	base := filepath.Join(templateDir, "base.gohtml")
+	index := filepath.Join(templateDir, "index.gohtml")
+	email := filepath.Join(templateDir, "email.gohtml")
+
+	indexTmpl, err := template.ParseFiles(base, index)
+	if err != nil {
+		return templateSet{}, err
+	}
+	emailTmpl, err := template.ParseFiles(base, email)
+	if err != nil {
+		return templateSet{}, err
+	}
+
+	return templateSet{
+		index: indexTmpl,
+		email: emailTmpl,
+	}, nil
 }

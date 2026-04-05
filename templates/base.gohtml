@@ -10,8 +10,16 @@
 <body>
     <main class="shell">
         <header class="hero">
-            <p class="eyebrow">Anonymous Email Service</p>
-            <h1>{{.Title}}</h1>
+            <div>
+                <p class="eyebrow">Anonymous Email Service</p>
+                <h1>{{.Title}}</h1>
+            </div>
+            {{if .Inbox}}
+            <div class="hero-meta">
+                <p class="meta-label">Inbox</p>
+                <p class="meta-value">{{.Inbox.Address}}</p>
+            </div>
+            {{end}}
         </header>
         {{template "content" .}}
     </main>
