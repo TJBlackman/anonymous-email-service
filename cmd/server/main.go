@@ -38,7 +38,7 @@ func run() error {
 	}
 	defer repo.Close()
 
-	handler, err := web.RegisterRoutes(repo, logger, "templates/*.gohtml")
+	handler, err := web.RegisterRoutesWithDomain(repo, logger, "templates/*.gohtml", cfg.Domain)
 	if err != nil {
 		return err
 	}

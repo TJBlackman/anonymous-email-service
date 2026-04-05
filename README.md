@@ -19,7 +19,7 @@ This repository contains the initial Go scaffold for a disposable email service.
 
 The server supports these environment variables:
 
-- `DOMAIN` default: `example.test`
+- `DOMAIN` required: email domain for generated inbox addresses
 - `SMTP_LISTEN_ADDR` default: `:25`
 - `HTTP_LISTEN_ADDR` default: `:8080`
 - `DATABASE_PATH` default: `./data/mail.db`
@@ -36,6 +36,7 @@ Use WSL2 as required by `AGENTS.md`:
 ```bash
 wsl -u trevor
 cd /mnt/c/Users/Trevor/Desktop/anonymous-email-service
+export DOMAIN=example.test
 go run ./cmd/server
 ```
 
@@ -44,6 +45,13 @@ go run ./cmd/server
 ```bash
 wsl -u trevor
 cd /mnt/c/Users/Trevor/Desktop/anonymous-email-service
+export DOMAIN=example.test
 go test ./...
 go build ./cmd/server
 ```
+
+## Step 1 Status
+
+- Phase 1 project structure is present, including placeholder `Dockerfile` and `docker-compose.yml`
+- `DOMAIN` is required at startup
+- Containerization and storage behavior are deferred to later phases

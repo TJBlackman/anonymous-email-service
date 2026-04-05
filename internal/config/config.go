@@ -23,7 +23,7 @@ type Config struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		Domain:            getEnvOrDefault("DOMAIN", "example.test"),
+		Domain:            strings.TrimSpace(os.Getenv("DOMAIN")),
 		SMTPListenAddr:    getEnvOrDefault("SMTP_LISTEN_ADDR", ":25"),
 		HTTPListenAddr:    getEnvOrDefault("HTTP_LISTEN_ADDR", ":8080"),
 		DatabasePath:      getEnvOrDefault("DATABASE_PATH", "./data/mail.db"),
@@ -34,8 +34,8 @@ func Load() (*Config, error) {
 		LogLevel:          getEnvOrDefault("LOG_LEVEL", "info"),
 	}
 
-	if strings.TrimSpace(cfg.Domain) == "" {
-		return nil, fmt.Errorf("DOMAIN must be non-empty when provided")
+	if cfg.Domain == "" {
+		return nil, fmt.Errorf("DOMAIN environment variable is required")
 	}
 
 	return cfg, nil

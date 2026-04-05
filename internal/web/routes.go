@@ -8,6 +8,10 @@ import (
 )
 
 func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templatePattern string) (http.Handler, error) {
+	return RegisterRoutesWithDomain(repo, logger, templatePattern, "example.test")
+}
+
+func RegisterRoutesWithDomain(repo repository.Repository, logger *slog.Logger, templatePattern, domain string) (http.Handler, error) {
 	templates, err := parseTemplates(templatePattern)
 	if err != nil {
 		return nil, err
@@ -29,5 +33,5 @@ func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templatePat
 	mux.HandleFunc("GET /api/emails", app.HandleAPIEmails)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 
-	return SessionMiddleware(repo, "example.test")(mux), nil
+	return SessionMiddleware(repo, domain)(mux), nil
 }
