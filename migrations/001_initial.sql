@@ -12,9 +12,9 @@ CREATE TABLE IF NOT EXISTS inboxes (
     expires_at INTEGER NOT NULL
 );
 
-CREATE INDEX idx_inboxes_token ON inboxes(token);
-CREATE INDEX idx_inboxes_address ON inboxes(address);
-CREATE INDEX idx_inboxes_expires_at ON inboxes(expires_at);
+CREATE INDEX IF NOT EXISTS idx_inboxes_token ON inboxes(token);
+CREATE INDEX IF NOT EXISTS idx_inboxes_address ON inboxes(address);
+CREATE INDEX IF NOT EXISTS idx_inboxes_expires_at ON inboxes(expires_at);
 
 CREATE TABLE IF NOT EXISTS emails (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS emails (
     FOREIGN KEY(inbox_id) REFERENCES inboxes(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_emails_inbox_id ON emails(inbox_id);
-CREATE INDEX idx_emails_received_at ON emails(received_at);
+CREATE INDEX IF NOT EXISTS idx_emails_inbox_id ON emails(inbox_id);
+CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails(received_at);
 
 CREATE TABLE IF NOT EXISTS attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,4 +47,4 @@ CREATE TABLE IF NOT EXISTS attachments (
     FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_attachments_email_id ON attachments(email_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_email_id ON attachments(email_id);
