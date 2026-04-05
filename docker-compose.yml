@@ -1,2 +1,17 @@
-# Placeholder only for Phase 1 project structure completion.
-# Real compose wiring is deferred to plan.md Phase 7.
+services:
+  app:
+    build: .
+    ports:
+      - "25:25"
+      - "8080:8080"
+    environment:
+      DOMAIN: example.test
+      SMTP_LISTEN_ADDR: :25
+      HTTP_LISTEN_ADDR: :8080
+      DATABASE_PATH: /app/data/mail.db
+    volumes:
+      - mail_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  mail_data:

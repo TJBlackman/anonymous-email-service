@@ -1,6 +1,6 @@
 # Disposable Email Service Development Plan
 
-## 1. Technical Stack
+## Stage 1. Technical Stack
 
 | Component        | Technology                       | Version/Notes                     |
 | ---------------- | -------------------------------- | --------------------------------- |
@@ -13,7 +13,7 @@
 | UUID Generation  | `github.com/google/uuid`         | For tokens and address generation |
 | Containerization | Docker                           | Alpine Linux base                 |
 
-## 2. Infrastructure Requirements
+## Stage 2. Infrastructure Requirements
 
 ### DNS Configuration
 
@@ -27,7 +27,7 @@
 - Port 80/443 (HTTP/HTTPS) - inbound
 - Firewall rules permitting these ports
 
-## 3. Data Models
+## Stage 3. Data Models
 
 ### Database Schema
 
@@ -128,7 +128,7 @@ type Attachment struct {
 }
 ```
 
-## 4. Configuration
+## Stage 4. Configuration
 
 ### Environment Variables
 
@@ -186,7 +186,7 @@ func Load() (*Config, error) {
 }
 ```
 
-## 5. System Components
+## Stage 5. System Components
 
 ### 5.1 Repository Layer
 
@@ -417,7 +417,7 @@ func (w *CleanupWorker) Stop() {
 }
 ```
 
-## 6. Implementation Steps
+## Stage 6. Implementation Steps
 
 ### Phase 1: Project Setup
 
@@ -744,7 +744,7 @@ volumes:
 - DNS configuration guide
 - Troubleshooting section
 
-## 7. Security Considerations
+## Stage 7. Security Considerations
 
 | Threat                 | Mitigation                                         |
 | ---------------------- | -------------------------------------------------- |
@@ -756,7 +756,7 @@ volumes:
 | Path traversal         | Validate IDs are integers, no file paths from user |
 | Information disclosure | Ownership checks on all email/attachment access    |
 
-## 8. Future Enhancements (Out of Scope)
+## Stage 8. Future Enhancements (Out of Scope)
 
 - Custom inbox addresses
 - Email forwarding

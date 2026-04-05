@@ -1,6 +1,6 @@
 # Anonymous Email Service
 
-This repository contains the initial Go scaffold for a disposable email service. The current state is intentionally thin: it provides a runnable HTTP server, placeholder route wiring, the planned package layout, and the first database migration, while SMTP and SQLite behavior remain stubbed for later implementation.
+This repository contains the current runtime scaffold for a disposable email service. The app now starts both its HTTP and SMTP listeners and can run directly or in Docker, while mailbox persistence and message processing remain intentionally deferred.
 
 ## Requirements
 
@@ -13,7 +13,8 @@ This repository contains the initial Go scaffold for a disposable email service.
 - `GET /health` returns `200 OK`
 - `GET /` renders a placeholder inbox page
 - Additional planned routes are registered and currently return `501 Not Implemented`
-- Repository, SMTP, and cleanup worker packages are scaffolded but not fully implemented
+- SMTP listens on `SMTP_LISTEN_ADDR`, accepts protocol traffic for the configured domain, and returns a temporary failure when message delivery reaches the unimplemented handling path
+- Repository and cleanup worker packages remain scaffolded and are not fully implemented
 
 ## Configuration
 
@@ -40,6 +41,11 @@ export DOMAIN=example.test
 go run ./cmd/server
 ```
 
+The app listens on:
+
+- HTTP: `HTTP_LISTEN_ADDR` default `:8080`
+- SMTP: `SMTP_LISTEN_ADDR` default `:25`
+
 ## Build And Test
 
 ```bash
@@ -50,8 +56,19 @@ go test ./...
 go build ./cmd/server
 ```
 
-## Step 1 Status
+## Run With Docker
 
-- Phase 1 project structure is present, including placeholder `Dockerfile` and `docker-compose.yml`
-- `DOMAIN` is required at startup
-- Containerization and storage behavior are deferred to later phases
+```bash
+docker build -t anonymous-email-service .
+docker run --rm \
+  -e DOMAIN=example.test \
+  -p 25:25 \
+  -p 8080:8080 \
+  anonymous-email-service
+```
+
+## Current Limits
+
+- The service does not persist inboxes or emails yet
+- SMTP traffic is accepted at the protocol layer but message handling still returns a temporary failure
+- The provided Docker assets expose the app ports only; external networking, TLS, DNS, and reverse proxying are expected to be handled outside the container
