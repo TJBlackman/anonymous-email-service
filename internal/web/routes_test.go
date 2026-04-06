@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"anonymous-email-service/internal/models"
+	"anonymous-email-service/internal/ratelimit"
 	"anonymous-email-service/internal/repository"
 )
 
@@ -34,6 +36,7 @@ func TestHealthBypassesSessionMiddleware(t *testing.T) {
 	if got := rec.Header().Get("Set-Cookie"); got != "" {
 		t.Fatalf("Set-Cookie = %q, want empty", got)
 	}
+	assertSecurityHeaders(t, rec.Result())
 }
 
 func TestFirstVisitCreatesInboxAndCookie(t *testing.T) {
@@ -163,8 +166,9 @@ func TestDeleteEmailRemovesOwnedMail(t *testing.T) {
 	email := repo.seedEmail(inbox.ID, "Delete me", false)
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodPost, "/email/"+itoa(email.ID)+"/delete", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/email/"+itoa(email.ID)+"/delete", nil)
 	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	req.Header.Set("Origin", "http://service.test")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -181,8 +185,9 @@ func TestNewInboxRotatesCookie(t *testing.T) {
 	oldInbox := repo.seedInbox("old@example.test", "old", "token-old", time.Now().Add(24*time.Hour))
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodPost, "/inbox/new", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", nil)
 	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: oldInbox.Token})
+	req.Header.Set("Origin", "http://service.test")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -229,15 +234,227 @@ func TestAPIEmailsReturnsExpectedShape(t *testing.T) {
 	if !response.Emails[0].HasAttachments {
 		t.Fatal("HasAttachments = false, want true")
 	}
+	assertSecurityHeaders(t, rec.Result())
+}
+
+func TestHealthReturns503WhenRepositoryPingFails(t *testing.T) {
+	repo := newMemoryRepository()
+	repo.pingErr = errors.New("database unavailable")
+	handler := newTestHandler(t, repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestSecurityHeadersAppliedToPagesDownloadsAndStaticAssets(t *testing.T) {
+	repo := newMemoryRepository()
+	inbox := repo.seedInbox("headers@example.test", "headers", "token-headers", time.Now().Add(24*time.Hour))
+	email := repo.seedEmail(inbox.ID, "Header Check", true)
+	attachment := repo.seedAttachment(email.ID, "hello.txt", []byte("payload"))
+	handler := newTestHandler(t, repo)
+
+	tests := []struct {
+		name string
+		req  *http.Request
+		want int
+	}{
+		{
+			name: "index",
+			req: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+				return req
+			}(),
+			want: http.StatusOK,
+		},
+		{
+			name: "api",
+			req: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/api/emails", nil)
+				req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+				return req
+			}(),
+			want: http.StatusOK,
+		},
+		{
+			name: "attachment",
+			req: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/email/"+itoa(email.ID)+"/attachment/"+itoa(attachment.ID), nil)
+				req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+				return req
+			}(),
+			want: http.StatusOK,
+		},
+		{
+			name: "health",
+			req:  httptest.NewRequest(http.MethodGet, "/health", nil),
+			want: http.StatusOK,
+		},
+		{
+			name: "static",
+			req:  httptest.NewRequest(http.MethodGet, "/static/style.css", nil),
+			want: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, tt.req)
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+
+			result := rec.Result()
+			assertSecurityHeaders(t, result)
+			if tt.name == "static" {
+				if got := result.Header.Get("Cache-Control"); got != staticCacheControl {
+					t.Fatalf("Cache-Control = %q, want %q", got, staticCacheControl)
+				}
+			}
+		})
+	}
+}
+
+func TestCrossOriginPostsAreRejected(t *testing.T) {
+	repo := newMemoryRepository()
+	inbox := repo.seedInbox("cross@example.test", "cross", "token-cross", time.Now().Add(24*time.Hour))
+	email := repo.seedEmail(inbox.ID, "Cross Origin", false)
+	handler := newTestHandler(t, repo)
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "new inbox", path: "http://service.test/inbox/new"},
+		{name: "delete email", path: "http://service.test/email/" + itoa(email.ID) + "/delete"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+			req.Header.Set("Origin", "http://attacker.test")
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
+func TestPostRequestBodyLimitRejectsOversizedPayloads(t *testing.T) {
+	repo := newMemoryRepository()
+	handler := newTestHandler(t, repo)
+
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", bytes.NewReader(bytes.Repeat([]byte("a"), int(maxPostBodyBytes+1))))
+	req.Header.Set("Origin", "http://service.test")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestExistingCookieBypassesCreateLimitButNewInboxIsRateLimited(t *testing.T) {
+	repo := newMemoryRepository()
+	handler := newTestHandlerWithOptions(t, repo, Options{
+		Domain:             "example.test",
+		InboxTTL:           24 * time.Hour,
+		CreateInboxLimiter: ratelimit.NewFixedWindowLimiter(1, time.Hour),
+	})
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusOK)
+	}
+	cookies := firstRec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected inbox cookie")
+	}
+
+	reuseReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	reuseReq.AddCookie(cookies[0])
+	reuseRec := httptest.NewRecorder()
+	handler.ServeHTTP(reuseRec, reuseReq)
+
+	if reuseRec.Code != http.StatusOK {
+		t.Fatalf("reuse status = %d, want %d", reuseRec.Code, http.StatusOK)
+	}
+
+	newInboxReq := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", nil)
+	newInboxReq.AddCookie(cookies[0])
+	newInboxReq.Header.Set("Origin", "http://service.test")
+	newInboxRec := httptest.NewRecorder()
+	handler.ServeHTTP(newInboxRec, newInboxReq)
+
+	if newInboxRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("new inbox status = %d, want %d", newInboxRec.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestViewEmailSanitizesHTML(t *testing.T) {
+	repo := newMemoryRepository()
+	inbox := repo.seedInbox("html@example.test", "html", "token-html", time.Now().Add(24*time.Hour))
+	email := &models.Email{
+		InboxID:    inbox.ID,
+		Sender:     "sender@example.net",
+		Recipient:  inbox.Address,
+		Subject:    "HTML",
+		BodyHTML:   `<p>Hello</p><script>alert(1)</script><a href="javascript:alert(1)" onclick="evil()">bad</a><img src="x" onerror="evil()">`,
+		ReceivedAt: time.Now().UTC(),
+	}
+	if err := repo.SaveEmail(context.Background(), email); err != nil {
+		t.Fatalf("SaveEmail() error = %v", err)
+	}
+
+	handler := newTestHandler(t, repo)
+	req := httptest.NewRequest(http.MethodGet, "/email/"+itoa(email.ID), nil)
+	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	for _, unwanted := range []string{"<script", "javascript:", "onclick=", "onerror="} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("body contains %q: %q", unwanted, body)
+		}
+	}
+	if !strings.Contains(body, "<p>Hello</p>") {
+		t.Fatalf("body = %q, want sanitized HTML content", body)
+	}
 }
 
 func newTestHandler(t *testing.T, repo *memoryRepository) http.Handler {
 	t.Helper()
 
-	handler, err := RegisterRoutes(repo, slog.New(slog.NewTextHandler(io.Discard, nil)), templateDir(t), Options{
+	return newTestHandlerWithOptions(t, repo, Options{
 		Domain:   "example.test",
 		InboxTTL: 24 * time.Hour,
 	})
+}
+
+func newTestHandlerWithOptions(t *testing.T, repo *memoryRepository, options Options) http.Handler {
+	t.Helper()
+
+	handler, err := RegisterRoutes(repo, slog.New(slog.NewTextHandler(io.Discard, nil)), templateDir(t), options)
 	if err != nil {
 		t.Fatalf("RegisterRoutes() error = %v", err)
 	}
@@ -265,6 +482,7 @@ type memoryRepository struct {
 	inboxAddresses   map[string]int64
 	emails           map[int64]*models.Email
 	attachments      map[int64]*models.Attachment
+	pingErr          error
 }
 
 func newMemoryRepository() *memoryRepository {
@@ -482,6 +700,8 @@ func (m *memoryRepository) GetAttachment(_ context.Context, attachmentID int64) 
 	return &copy, nil
 }
 
+func (m *memoryRepository) Ping(context.Context) error { return m.pingErr }
+
 func (m *memoryRepository) Close() error { return nil }
 
 func (m *memoryRepository) seedInbox(address, localPart, token string, expiresAt time.Time) *models.Inbox {
@@ -519,6 +739,23 @@ func (m *memoryRepository) seedAttachment(emailID int64, filename string, conten
 	}
 	_ = m.SaveAttachment(context.Background(), attachment)
 	return attachment
+}
+
+func assertSecurityHeaders(t *testing.T, response *http.Response) {
+	t.Helper()
+
+	if got := response.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+	}
+	if got := response.Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("X-Frame-Options = %q, want %q", got, "DENY")
+	}
+	if got := response.Header.Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %q, want %q", got, "no-referrer")
+	}
+	if got := response.Header.Get("Content-Security-Policy"); got != contentSecurityPolicy {
+		t.Fatalf("Content-Security-Policy = %q, want %q", got, contentSecurityPolicy)
+	}
 }
 
 func itoa(value int64) string {

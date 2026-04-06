@@ -7,10 +7,11 @@
 </section>
 
 <section class="panel email-body">
-    {{if .RenderedBodyIsHTML}}
-    <p class="muted">HTML-only message shown as escaped markup for safety.</p>
+    {{if .RenderedBodyHTML}}
+    <div class="email-html">{{.RenderedBodyHTML}}</div>
+    {{else}}
+    <pre>{{.RenderedBodyText}}</pre>
     {{end}}
-    <pre>{{.RenderedBody}}</pre>
 </section>
 
 {{if .Attachments}}

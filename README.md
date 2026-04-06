@@ -1,6 +1,6 @@
 # Anonymous Email Service
 
-This repository contains the current runtime scaffold for a disposable email service. The app now starts both its HTTP and SMTP listeners and can run directly or in Docker, while mailbox persistence and message processing remain intentionally deferred.
+This repository contains a disposable email service implemented in Go. The app persists inboxes and received messages in SQLite, accepts inbound SMTP traffic for generated inboxes, renders inbox and message views over HTTP, and includes the stage 6 hardening pass for cookies, request validation, security headers, and rate limiting.
 
 ## Requirements
 
@@ -10,11 +10,16 @@ This repository contains the current runtime scaffold for a disposable email ser
 
 ## Project Status
 
-- `GET /health` returns `200 OK`
-- `GET /` renders a placeholder inbox page
-- Additional planned routes are registered and currently return `501 Not Implemented`
-- SMTP listens on `SMTP_LISTEN_ADDR`, accepts protocol traffic for the configured domain, and returns a temporary failure when message delivery reaches the unimplemented handling path
-- Repository and cleanup worker packages remain scaffolded and are not fully implemented
+- `GET /` creates or resumes a disposable inbox and renders stored email
+- `GET /email/{id}` renders a single stored email and marks it read
+- `GET /email/{id}/attachment/{aid}` serves owned attachments as downloads
+- `POST /email/{id}/delete` deletes an owned email
+- `POST /inbox/new` rotates to a fresh inbox address
+- `GET /api/emails` returns the current inbox contents as JSON
+- `GET /health` checks repository reachability and returns `200 OK` or `503 Service Unavailable`
+- SMTP accepts mail for existing generated inboxes on the configured domain and stores parsed bodies and attachments
+- Expired inboxes are deleted by the background cleanup worker
+- HTTP responses include security headers, POST routes enforce same-origin checks and request-size limits, and inbox creation / SMTP sessions are rate limited in-process
 
 ## Configuration
 
@@ -28,6 +33,9 @@ The server reads configuration from environment variables at startup. `DOMAIN` i
 - `MAX_EMAIL_SIZE_MB`: default `10`
 - `MAX_ATTACHMENT_MB`: default `5`
 - `CLEANUP_INTERVAL_MIN`: default `15`
+- `COOKIE_SECURE`: default `false`
+- `INBOX_CREATE_LIMIT_PER_HOUR`: default `10`
+- `SMTP_CONNECTION_LIMIT_PER_MIN`: default `30`
 - `LOG_LEVEL`: default `info`
 
 Validation notes:
@@ -36,7 +44,26 @@ Validation notes:
 - `SMTP_LISTEN_ADDR` and `HTTP_LISTEN_ADDR` must be valid `host:port` values such as `:8080` or `127.0.0.1:2525`
 - `INBOX_TTL_HOURS`, `MAX_EMAIL_SIZE_MB`, `MAX_ATTACHMENT_MB`, and `CLEANUP_INTERVAL_MIN` must be positive integers
 - `MAX_ATTACHMENT_MB` cannot exceed `MAX_EMAIL_SIZE_MB`
+- `COOKIE_SECURE` must be `true` or `false`
+- `INBOX_CREATE_LIMIT_PER_HOUR` and `SMTP_CONNECTION_LIMIT_PER_MIN` must be positive integers
 - `LOG_LEVEL` must be one of `debug`, `info`, `warn`, or `error`
+
+Cookie behavior:
+
+- Default cookie name is `inbox_token` with `HttpOnly` and `SameSite=Lax`
+- When `COOKIE_SECURE=true`, the service sets `__Host-inbox_token` and requires secure transport semantics (`Secure`, `Path=/`, no `Domain` attribute)
+
+HTTP hardening:
+
+- All responses set `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a restrictive `Content-Security-Policy`
+- POST routes require a same-origin `Origin` header, or a same-origin `Referer` if `Origin` is absent
+- POST request bodies are limited to `64 KiB`
+
+Rate limiting:
+
+- Inbox creation is limited per client IP using the remote socket address only
+- SMTP session creation is limited per client IP using the remote socket address only
+- Trusted proxy headers such as `X-Forwarded-For` are intentionally ignored in this stage
 
 ## Run Locally
 
@@ -77,6 +104,7 @@ docker run --rm \
 
 ## Current Limits
 
-- The service does not persist inboxes or emails yet
-- SMTP traffic is accepted at the protocol layer but message handling still returns a temporary failure
+- Rate limiting is in-memory and scoped to a single process
+- Inbox ownership is session-cookie based; there is no account system
+- HTML email bodies are sanitized before rendering and may lose unsupported markup
 - The provided Docker assets expose the app ports only; external networking, TLS, DNS, and reverse proxying are expected to be handled outside the container

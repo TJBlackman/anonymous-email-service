@@ -63,6 +63,15 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.CleanupInterval != time.Duration(defaultCleanupMins)*time.Minute {
 		t.Fatalf("CleanupInterval = %v, want %v", cfg.CleanupInterval, time.Duration(defaultCleanupMins)*time.Minute)
 	}
+	if cfg.CookieSecure != defaultCookieSecure {
+		t.Fatalf("CookieSecure = %t, want %t", cfg.CookieSecure, defaultCookieSecure)
+	}
+	if cfg.InboxCreateLimitPerHour != defaultInboxCreateLimitPerHour {
+		t.Fatalf("InboxCreateLimitPerHour = %d, want %d", cfg.InboxCreateLimitPerHour, defaultInboxCreateLimitPerHour)
+	}
+	if cfg.SMTPConnectionLimitPerMin != defaultSMTPConnectionLimitPerMin {
+		t.Fatalf("SMTPConnectionLimitPerMin = %d, want %d", cfg.SMTPConnectionLimitPerMin, defaultSMTPConnectionLimitPerMin)
+	}
 	if cfg.LogLevel != defaultLogLevel {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, defaultLogLevel)
 	}
@@ -77,6 +86,9 @@ func TestLoadTrimsAndNormalizesValidOverrides(t *testing.T) {
 	t.Setenv("MAX_EMAIL_SIZE_MB", " 20 ")
 	t.Setenv("MAX_ATTACHMENT_MB", " 4 ")
 	t.Setenv("CLEANUP_INTERVAL_MIN", " 5 ")
+	t.Setenv("COOKIE_SECURE", " true ")
+	t.Setenv("INBOX_CREATE_LIMIT_PER_HOUR", " 12 ")
+	t.Setenv("SMTP_CONNECTION_LIMIT_PER_MIN", " 45 ")
 	t.Setenv("LOG_LEVEL", " WARN ")
 
 	cfg, err := Load()
@@ -107,6 +119,15 @@ func TestLoadTrimsAndNormalizesValidOverrides(t *testing.T) {
 	}
 	if cfg.CleanupInterval != 5*time.Minute {
 		t.Fatalf("CleanupInterval = %v, want %v", cfg.CleanupInterval, 5*time.Minute)
+	}
+	if !cfg.CookieSecure {
+		t.Fatal("CookieSecure = false, want true")
+	}
+	if cfg.InboxCreateLimitPerHour != 12 {
+		t.Fatalf("InboxCreateLimitPerHour = %d, want %d", cfg.InboxCreateLimitPerHour, 12)
+	}
+	if cfg.SMTPConnectionLimitPerMin != 45 {
+		t.Fatalf("SMTPConnectionLimitPerMin = %d, want %d", cfg.SMTPConnectionLimitPerMin, 45)
 	}
 	if cfg.LogLevel != "warn" {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, "warn")
@@ -190,10 +211,14 @@ func TestLoadRejectsInvalidPositiveIntegers(t *testing.T) {
 		{name: "email size non integer", key: "MAX_EMAIL_SIZE_MB", value: "invalid"},
 		{name: "attachment size non integer", key: "MAX_ATTACHMENT_MB", value: "invalid"},
 		{name: "cleanup interval non integer", key: "CLEANUP_INTERVAL_MIN", value: "invalid"},
+		{name: "create limit non integer", key: "INBOX_CREATE_LIMIT_PER_HOUR", value: "invalid"},
+		{name: "smtp limit non integer", key: "SMTP_CONNECTION_LIMIT_PER_MIN", value: "invalid"},
 		{name: "ttl zero", key: "INBOX_TTL_HOURS", value: "0"},
 		{name: "email size negative", key: "MAX_EMAIL_SIZE_MB", value: "-1"},
 		{name: "attachment size zero", key: "MAX_ATTACHMENT_MB", value: "0"},
 		{name: "cleanup interval negative", key: "CLEANUP_INTERVAL_MIN", value: "-5"},
+		{name: "create limit zero", key: "INBOX_CREATE_LIMIT_PER_HOUR", value: "0"},
+		{name: "smtp limit negative", key: "SMTP_CONNECTION_LIMIT_PER_MIN", value: "-1"},
 	}
 
 	for _, tt := range tests {
@@ -209,6 +234,19 @@ func TestLoadRejectsInvalidPositiveIntegers(t *testing.T) {
 				t.Fatalf("error = %q, want positive integer validation for %s", err, tt.key)
 			}
 		})
+	}
+}
+
+func TestLoadRejectsInvalidCookieSecure(t *testing.T) {
+	t.Setenv("DOMAIN", "example.test")
+	t.Setenv("COOKIE_SECURE", "maybe")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "COOKIE_SECURE must be a boolean") {
+		t.Fatalf("error = %q, want COOKIE_SECURE validation", err)
 	}
 }
 
@@ -244,6 +282,7 @@ func TestLoadAggregatesValidationErrors(t *testing.T) {
 	t.Setenv("SMTP_LISTEN_ADDR", "localhost")
 	t.Setenv("MAX_EMAIL_SIZE_MB", "1")
 	t.Setenv("MAX_ATTACHMENT_MB", "2")
+	t.Setenv("COOKIE_SECURE", "maybe")
 	t.Setenv("LOG_LEVEL", "trace")
 
 	_, err := Load()
@@ -255,6 +294,7 @@ func TestLoadAggregatesValidationErrors(t *testing.T) {
 		"DOMAIN must not contain @",
 		"SMTP_LISTEN_ADDR must be a valid host:port address",
 		"MAX_ATTACHMENT_MB cannot exceed MAX_EMAIL_SIZE_MB",
+		"COOKIE_SECURE must be a boolean",
 		"LOG_LEVEL must be one of: debug, info, warn, error",
 	} {
 		if !strings.Contains(err.Error(), want) {

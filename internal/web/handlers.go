@@ -1,14 +1,18 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"anonymous-email-service/internal/clientip"
 	"anonymous-email-service/internal/models"
 	"anonymous-email-service/internal/repository"
 )
@@ -21,12 +25,12 @@ type indexData struct {
 }
 
 type emailData struct {
-	Title              string
-	Inbox              *models.Inbox
-	Email              *models.Email
-	Attachments        []*models.Attachment
-	RenderedBody       string
-	RenderedBodyIsHTML bool
+	Title            string
+	Inbox            *models.Inbox
+	Email            *models.Email
+	Attachments      []*models.Attachment
+	RenderedBodyHTML template.HTML
+	RenderedBodyText string
 }
 
 type apiEmail struct {
@@ -117,14 +121,14 @@ func (a *app) HandleViewEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, isHTML := renderEmailBody(email)
+	bodyHTML, bodyText := a.renderEmailBody(email)
 	if err := a.templates.email.ExecuteTemplate(w, "base", emailData{
-		Title:              email.Subject,
-		Inbox:              inbox,
-		Email:              email,
-		Attachments:        attachments,
-		RenderedBody:       body,
-		RenderedBodyIsHTML: isHTML,
+		Title:            email.Subject,
+		Inbox:            inbox,
+		Email:            email,
+		Attachments:      attachments,
+		RenderedBodyHTML: bodyHTML,
+		RenderedBodyText: bodyText,
 	}); err != nil {
 		a.logError("render email failed", err)
 		http.Error(w, "template rendering failed", http.StatusInternalServerError)
@@ -208,8 +212,13 @@ func (a *app) HandleDeleteEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) HandleNewInbox(w http.ResponseWriter, r *http.Request) {
-	inbox, err := a.createInbox(r.Context())
+	inbox, err := a.createInbox(r.Context(), clientip.FromHTTPRequest(r))
 	if err != nil {
+		var limitErr *rateLimitError
+		if errors.As(err, &limitErr) {
+			writeRateLimitResponse(w, limitErr.RetryAfter)
+			return
+		}
 		a.logError("create new inbox failed", err)
 		http.Error(w, "failed to create inbox", http.StatusInternalServerError)
 		return
@@ -266,18 +275,30 @@ func (a *app) HandleAPIEmails(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := a.repo.Ping(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"degraded"}`))
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-func renderEmailBody(email *models.Email) (string, bool) {
-	if email.BodyText != "" {
-		return email.BodyText, false
-	}
+func (a *app) renderEmailBody(email *models.Email) (template.HTML, string) {
 	if email.BodyHTML != "" {
-		return email.BodyHTML, true
+		sanitized := strings.TrimSpace(a.emailHTMLPolicy.Sanitize(email.BodyHTML))
+		if sanitized != "" {
+			return template.HTML(sanitized), ""
+		}
 	}
-	return "(empty message)", false
+	if email.BodyText != "" {
+		return "", email.BodyText
+	}
+	return "", "(empty message)"
 }
 
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
@@ -292,12 +313,12 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 
 func (a *app) setInboxCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     string(inboxCookieName),
+		Name:     a.cookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   false,
+		Secure:   a.options.CookieSecure,
 		MaxAge:   int(a.options.InboxTTL.Seconds()),
 	})
 }

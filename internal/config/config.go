@@ -13,26 +13,32 @@ import (
 )
 
 type Config struct {
-	Domain            string
-	SMTPListenAddr    string
-	HTTPListenAddr    string
-	DatabasePath      string
-	InboxTTL          time.Duration
-	MaxEmailSize      int64
-	MaxAttachmentSize int64
-	CleanupInterval   time.Duration
-	LogLevel          string
+	Domain                    string
+	SMTPListenAddr            string
+	HTTPListenAddr            string
+	DatabasePath              string
+	InboxTTL                  time.Duration
+	MaxEmailSize              int64
+	MaxAttachmentSize         int64
+	CleanupInterval           time.Duration
+	CookieSecure              bool
+	InboxCreateLimitPerHour   int
+	SMTPConnectionLimitPerMin int
+	LogLevel                  string
 }
 
 const (
-	defaultSMTPListenAddr  = ":25"
-	defaultHTTPListenAddr  = ":8080"
-	defaultDatabasePath    = "./data/mail.db"
-	defaultInboxTTLHours   = 24
-	defaultMaxEmailSizeMB  = 10
-	defaultMaxAttachSizeMB = 5
-	defaultCleanupMins     = 15
-	defaultLogLevel        = "info"
+	defaultSMTPListenAddr            = ":25"
+	defaultHTTPListenAddr            = ":8080"
+	defaultDatabasePath              = "./data/mail.db"
+	defaultInboxTTLHours             = 24
+	defaultMaxEmailSizeMB            = 10
+	defaultMaxAttachSizeMB           = 5
+	defaultCleanupMins               = 15
+	defaultCookieSecure              = false
+	defaultInboxCreateLimitPerHour   = 10
+	defaultSMTPConnectionLimitPerMin = 30
+	defaultLogLevel                  = "info"
 )
 
 var allowedLogLevels = map[string]struct{}{
@@ -51,6 +57,9 @@ func Load() (*Config, error) {
 	maxEmailSizeMB, maxEmailSizeErr := loadPositiveInt("MAX_EMAIL_SIZE_MB", defaultMaxEmailSizeMB)
 	maxAttachmentSizeMB, maxAttachmentSizeErr := loadPositiveInt("MAX_ATTACHMENT_MB", defaultMaxAttachSizeMB)
 	cleanupIntervalMins, cleanupIntervalErr := loadPositiveInt("CLEANUP_INTERVAL_MIN", defaultCleanupMins)
+	cookieSecure, cookieSecureErr := loadBool("COOKIE_SECURE", defaultCookieSecure)
+	inboxCreateLimitPerHour, inboxCreateLimitErr := loadPositiveInt("INBOX_CREATE_LIMIT_PER_HOUR", defaultInboxCreateLimitPerHour)
+	smtpConnectionLimitPerMin, smtpConnectionLimitErr := loadPositiveInt("SMTP_CONNECTION_LIMIT_PER_MIN", defaultSMTPConnectionLimitPerMin)
 	logLevel, logLevelErr := loadLogLevel()
 
 	errs := collectErrors(
@@ -62,6 +71,9 @@ func Load() (*Config, error) {
 		maxEmailSizeErr,
 		maxAttachmentSizeErr,
 		cleanupIntervalErr,
+		cookieSecureErr,
+		inboxCreateLimitErr,
+		smtpConnectionLimitErr,
 		logLevelErr,
 	)
 
@@ -74,15 +86,18 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		Domain:            domain,
-		SMTPListenAddr:    smtpListenAddr,
-		HTTPListenAddr:    httpListenAddr,
-		DatabasePath:      databasePath,
-		InboxTTL:          time.Duration(inboxTTLHours) * time.Hour,
-		MaxEmailSize:      int64(maxEmailSizeMB) * 1024 * 1024,
-		MaxAttachmentSize: int64(maxAttachmentSizeMB) * 1024 * 1024,
-		CleanupInterval:   time.Duration(cleanupIntervalMins) * time.Minute,
-		LogLevel:          logLevel,
+		Domain:                    domain,
+		SMTPListenAddr:            smtpListenAddr,
+		HTTPListenAddr:            httpListenAddr,
+		DatabasePath:              databasePath,
+		InboxTTL:                  time.Duration(inboxTTLHours) * time.Hour,
+		MaxEmailSize:              int64(maxEmailSizeMB) * 1024 * 1024,
+		MaxAttachmentSize:         int64(maxAttachmentSizeMB) * 1024 * 1024,
+		CleanupInterval:           time.Duration(cleanupIntervalMins) * time.Minute,
+		CookieSecure:              cookieSecure,
+		InboxCreateLimitPerHour:   inboxCreateLimitPerHour,
+		SMTPConnectionLimitPerMin: smtpConnectionLimitPerMin,
+		LogLevel:                  logLevel,
 	}, nil
 }
 
@@ -149,6 +164,20 @@ func loadPositiveInt(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+
+	return parsed, nil
+}
+
+func loadBool(key string, fallback bool) (bool, error) {
+	value, usedDefault := loadTrimmedString(key, strconv.FormatBool(fallback), true)
+	if !usedDefault && value == "" {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+
+	parsed, err := strconv.ParseBool(strings.ToLower(value))
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
 	}
 
 	return parsed, nil

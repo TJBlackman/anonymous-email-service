@@ -183,6 +183,18 @@ code {
   font-family: "Courier New", monospace;
 }
 
+.email-html {
+  overflow-wrap: break-word;
+}
+
+.email-html > :first-child {
+  margin-top: 0;
+}
+
+.email-html > :last-child {
+  margin-bottom: 0;
+}
+
 button {
   border: 1px solid var(--accent);
   background: var(--accent);

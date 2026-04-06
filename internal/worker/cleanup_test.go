@@ -125,4 +125,5 @@ func (s *stubRepository) GetAttachmentsByEmailID(context.Context, int64) ([]*mod
 func (s *stubRepository) GetAttachment(context.Context, int64) (*models.Attachment, error) {
 	return nil, nil
 }
-func (s *stubRepository) Close() error { return nil }
+func (s *stubRepository) Ping(context.Context) error { return nil }
+func (s *stubRepository) Close() error               { return nil }

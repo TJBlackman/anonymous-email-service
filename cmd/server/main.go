@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"anonymous-email-service/internal/config"
+	"anonymous-email-service/internal/ratelimit"
 	"anonymous-email-service/internal/repository"
 	appsmtp "anonymous-email-service/internal/smtp"
 	"anonymous-email-service/internal/web"
@@ -35,6 +36,9 @@ func run() error {
 		Level: config.LogLevel(cfg.LogLevel),
 	}))
 
+	inboxCreateLimiter := ratelimit.NewFixedWindowLimiter(cfg.InboxCreateLimitPerHour, time.Hour)
+	smtpConnectionLimiter := ratelimit.NewFixedWindowLimiter(cfg.SMTPConnectionLimitPerMin, time.Minute)
+
 	repo, err := repository.NewSQLite(cfg.DatabasePath)
 	if err != nil {
 		return err
@@ -42,8 +46,10 @@ func run() error {
 	defer repo.Close()
 
 	handler, err := web.RegisterRoutes(repo, logger, "templates", web.Options{
-		Domain:   cfg.Domain,
-		InboxTTL: cfg.InboxTTL,
+		Domain:             cfg.Domain,
+		InboxTTL:           cfg.InboxTTL,
+		CookieSecure:       cfg.CookieSecure,
+		CreateInboxLimiter: inboxCreateLimiter,
 	})
 	if err != nil {
 		return err
@@ -54,7 +60,7 @@ func run() error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	smtpServer := appsmtp.NewServer(repo, cfg, logger)
+	smtpServer := appsmtp.NewServer(repo, cfg, logger, smtpConnectionLimiter)
 	cleanupWorker := worker.NewCleanupWorker(repo, cfg.CleanupInterval, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

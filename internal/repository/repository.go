@@ -31,5 +31,6 @@ type Repository interface {
 	GetAttachmentsByEmailID(ctx context.Context, emailID int64) ([]*models.Attachment, error)
 	GetAttachment(ctx context.Context, attachmentID int64) (*models.Attachment, error)
 
+	Ping(ctx context.Context) error
 	Close() error
 }

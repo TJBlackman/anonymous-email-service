@@ -235,6 +235,14 @@ func TestSQLiteSaveInboundMessageRollsBackOnAttachmentFailure(t *testing.T) {
 	}
 }
 
+func TestSQLitePing(t *testing.T) {
+	repo := openTestSQLite(t)
+
+	if err := repo.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping() error = %v", err)
+	}
+}
+
 func openTestSQLite(t *testing.T) Repository {
 	t.Helper()
 

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"anonymous-email-service/internal/config"
 	"anonymous-email-service/internal/models"
+	"anonymous-email-service/internal/ratelimit"
 	"anonymous-email-service/internal/repository"
 	gosmtp "github.com/emersion/go-smtp"
 )
@@ -20,7 +22,7 @@ func TestNewServerAppliesConfig(t *testing.T) {
 		MaxEmailSize:   4 * 1024,
 	}
 
-	server := NewServer(nil, cfg, nil)
+	server := NewServer(nil, cfg, nil, nil)
 
 	if server.Addr != ":2525" {
 		t.Fatalf("Addr = %q, want %q", server.Addr, ":2525")
@@ -33,6 +35,27 @@ func TestNewServerAppliesConfig(t *testing.T) {
 	}
 	if server.MaxRecipients != 1 {
 		t.Fatalf("MaxRecipients = %d, want %d", server.MaxRecipients, 1)
+	}
+}
+
+func TestBackendNewSessionRateLimitsConnections(t *testing.T) {
+	backend := NewBackend(&stubRepository{}, &config.Config{Domain: "example.test"}, nil, ratelimit.NewFixedWindowLimiter(1, time.Minute))
+
+	if _, err := backend.NewSession(nil); err != nil {
+		t.Fatalf("first NewSession() error = %v", err)
+	}
+
+	_, err := backend.NewSession(nil)
+	if err == nil {
+		t.Fatal("expected rate-limit rejection")
+	}
+
+	var smtpErr *gosmtp.SMTPError
+	if !errors.As(err, &smtpErr) {
+		t.Fatalf("expected SMTPError, got %T", err)
+	}
+	if smtpErr.Code != 421 {
+		t.Fatalf("Code = %d, want %d", smtpErr.Code, 421)
 	}
 }
 
@@ -353,4 +376,5 @@ func (s *stubRepository) GetAttachmentsByEmailID(context.Context, int64) ([]*mod
 func (s *stubRepository) GetAttachment(context.Context, int64) (*models.Attachment, error) {
 	return nil, repository.ErrNotFound
 }
-func (s *stubRepository) Close() error { return nil }
+func (s *stubRepository) Ping(context.Context) error { return nil }
+func (s *stubRepository) Close() error               { return nil }

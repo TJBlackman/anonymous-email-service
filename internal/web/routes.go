@@ -7,12 +7,16 @@ import (
 	"path/filepath"
 	"time"
 
+	"anonymous-email-service/internal/ratelimit"
 	"anonymous-email-service/internal/repository"
+	"github.com/microcosm-cc/bluemonday"
 )
 
 type Options struct {
-	Domain   string
-	InboxTTL time.Duration
+	Domain             string
+	InboxTTL           time.Duration
+	CookieSecure       bool
+	CreateInboxLimiter *ratelimit.FixedWindowLimiter
 }
 
 type templateSet struct {
@@ -21,10 +25,12 @@ type templateSet struct {
 }
 
 type app struct {
-	repo      repository.Repository
-	logger    *slog.Logger
-	templates templateSet
-	options   Options
+	repo            repository.Repository
+	logger          *slog.Logger
+	templates       templateSet
+	options         Options
+	cookieName      string
+	emailHTMLPolicy *bluemonday.Policy
 }
 
 func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templateDir string, options Options) (http.Handler, error) {
@@ -32,17 +38,20 @@ func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templateDir
 	if err != nil {
 		return nil, err
 	}
+	staticDir := resolveStaticDir(templateDir)
 
 	app := &app{
-		repo:      repo,
-		logger:    logger,
-		templates: templates,
-		options:   options,
+		repo:            repo,
+		logger:          logger,
+		templates:       templates,
+		options:         options,
+		cookieName:      cookieName(options.CookieSecure),
+		emailHTMLPolicy: newEmailHTMLPolicy(),
 	}
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /health", app.HandleHealth)
-	root.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	root.Handle("GET /static/", app.staticHandler(http.Dir(staticDir)))
 
 	inboxMux := http.NewServeMux()
 	inboxMux.HandleFunc("GET /", app.HandleIndex)
@@ -53,7 +62,14 @@ func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templateDir
 	inboxMux.HandleFunc("GET /api/emails", app.HandleAPIEmails)
 
 	root.Handle("/", SessionMiddleware(app)(inboxMux))
-	return root, nil
+	return app.wrapHTTP(root), nil
+}
+
+func resolveStaticDir(templateDir string) string {
+	if templateDir == "" || templateDir == "templates" {
+		return "static"
+	}
+	return filepath.Join(filepath.Dir(templateDir), "static")
 }
 
 func parseTemplates(templateDir string) (templateSet, error) {

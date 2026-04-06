@@ -337,6 +337,13 @@ func (s *SQLite) Close() error {
 	return s.db.Close()
 }
 
+func (s *SQLite) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping sqlite: %w", err)
+	}
+	return nil
+}
+
 type execContexter interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
