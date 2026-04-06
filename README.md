@@ -108,3 +108,25 @@ docker run --rm \
 - Inbox ownership is session-cookie based; there is no account system
 - HTML email bodies are sanitized before rendering and may lose unsupported markup
 - The provided Docker assets expose the app ports only; external networking, TLS, DNS, and reverse proxying are expected to be handled outside the container
+
+## Security Considerations
+
+- Database access uses parameterized queries rather than string-built SQL
+- HTML email content is sanitized before rendering to reduce XSS risk
+- SMTP accepts mail only for known generated inboxes on the configured domain, which avoids acting as an open relay
+- Request bodies, inbound message size, attachment size, and inbox creation / SMTP session rates are all bounded in-process to reduce denial-of-service risk
+- Inbox ownership is token-based and enforced with `HttpOnly` cookies, `SameSite=Lax`, and optional secure `__Host-` cookie semantics when `COOKIE_SECURE=true`
+- Email and attachment access is ID-based and checked against the current inbox, which prevents path-style traversal and cross-inbox object access
+- Message views, attachment downloads, and delete actions all enforce inbox-scoped ownership checks to reduce information disclosure between inboxes
+
+## Future Enhancements
+
+These items are not implemented today and remain out of scope for the current service:
+
+- Custom inbox addresses
+- Email forwarding
+- API key authentication for programmatic access
+- Webhook notifications for new email
+- SMTP STARTTLS / broader TLS support
+- Multiple domain support
+- Admin dashboard and service metrics
