@@ -18,6 +18,7 @@ import (
 func TestNewServerAppliesConfig(t *testing.T) {
 	cfg := &config.Config{
 		Domain:         "example.test",
+		SMTPHostname:   "mail.example.test",
 		SMTPListenAddr: ":2525",
 		MaxEmailSize:   4 * 1024,
 	}
@@ -27,8 +28,8 @@ func TestNewServerAppliesConfig(t *testing.T) {
 	if server.Addr != ":2525" {
 		t.Fatalf("Addr = %q, want %q", server.Addr, ":2525")
 	}
-	if server.Domain != "example.test" {
-		t.Fatalf("Domain = %q, want %q", server.Domain, "example.test")
+	if server.Domain != "mail.example.test" {
+		t.Fatalf("Domain = %q, want %q", server.Domain, "mail.example.test")
 	}
 	if server.MaxMessageBytes != 4*1024 {
 		t.Fatalf("MaxMessageBytes = %d, want %d", server.MaxMessageBytes, 4*1024)
@@ -62,7 +63,7 @@ func TestBackendNewSessionRateLimitsConnections(t *testing.T) {
 func TestSessionRcptRejectsInvalidAddress(t *testing.T) {
 	session := &Session{
 		backend: &Backend{
-			domain: "example.test",
+			domains: newDomainCache(domainCacheTTL),
 			repo:   &stubRepository{},
 		},
 	}
@@ -84,7 +85,7 @@ func TestSessionRcptRejectsInvalidAddress(t *testing.T) {
 func TestSessionRcptRejectsRelay(t *testing.T) {
 	session := &Session{
 		backend: &Backend{
-			domain: "example.test",
+			domains: newDomainCache(domainCacheTTL),
 			repo:   &stubRepository{},
 		},
 	}
@@ -114,7 +115,7 @@ func TestSessionRcptAcceptsConfiguredDomain(t *testing.T) {
 	}
 	session := &Session{
 		backend: &Backend{
-			domain: "example.test",
+			domains: newDomainCache(domainCacheTTL),
 			repo:   repo,
 		},
 	}
@@ -134,7 +135,7 @@ func TestSessionRcptAcceptsConfiguredDomain(t *testing.T) {
 func TestSessionRcptRejectsUnknownInbox(t *testing.T) {
 	session := &Session{
 		backend: &Backend{
-			domain: "example.test",
+			domains: newDomainCache(domainCacheTTL),
 			repo:   &stubRepository{},
 		},
 	}
@@ -167,7 +168,7 @@ func TestSessionDataStoresMultipartMessage(t *testing.T) {
 	}
 	session := &Session{
 		backend: &Backend{
-			domain: "example.test",
+			domains: newDomainCache(domainCacheTTL),
 			config: &config.Config{
 				Domain:            "example.test",
 				MaxEmailSize:      1024 * 1024,
@@ -249,7 +250,7 @@ func TestSessionDataRejectsOversizedAttachment(t *testing.T) {
 	}
 	session := &Session{
 		backend: &Backend{
-			domain: "example.test",
+			domains: newDomainCache(domainCacheTTL),
 			config: &config.Config{
 				Domain:            "example.test",
 				MaxEmailSize:      1024 * 1024,
@@ -304,7 +305,7 @@ func TestSessionDataReturnsTemporaryFailureOnRepositoryError(t *testing.T) {
 	}
 	session := &Session{
 		backend: &Backend{
-			domain: "example.test",
+			domains: newDomainCache(domainCacheTTL),
 			config: &config.Config{
 				Domain:            "example.test",
 				MaxEmailSize:      1024 * 1024,
@@ -334,6 +335,7 @@ func TestSessionDataReturnsTemporaryFailureOnRepositoryError(t *testing.T) {
 
 type stubRepository struct {
 	inboxByAddress   map[string]*models.Inbox
+	enabledDomains   map[string]bool
 	savedEmail       *models.Email
 	savedAttachments []*models.Attachment
 	saveErr          error
@@ -375,6 +377,26 @@ func (s *stubRepository) GetAttachmentsByEmailID(context.Context, int64) ([]*mod
 }
 func (s *stubRepository) GetAttachment(context.Context, int64) (*models.Attachment, error) {
 	return nil, repository.ErrNotFound
+}
+func (s *stubRepository) CreateDomain(context.Context, string) (*models.Domain, error) {
+	return nil, nil
+}
+func (s *stubRepository) ListDomains(context.Context, bool) ([]*models.Domain, error) {
+	return nil, nil
+}
+func (s *stubRepository) GetDomain(context.Context, string) (*models.Domain, error) {
+	return nil, repository.ErrNotFound
+}
+func (s *stubRepository) SetDomainEnabled(context.Context, string, bool) error { return nil }
+
+// IsDomainEnabled treats example.test as enabled by default so existing
+// relay/accept tests keep their expectations; enabledDomains overrides this.
+func (s *stubRepository) IsDomainEnabled(_ context.Context, name string) (bool, error) {
+	name = strings.ToLower(name)
+	if s.enabledDomains != nil {
+		return s.enabledDomains[name], nil
+	}
+	return name == "example.test", nil
 }
 func (s *stubRepository) Ping(context.Context) error { return nil }
 func (s *stubRepository) Close() error               { return nil }

@@ -35,7 +35,15 @@ func (s *Session) Rcpt(to string, _ *gosmtp.RcptOptions) error {
 	}
 
 	parts := strings.Split(addr.Address, "@")
-	if len(parts) != 2 || !strings.EqualFold(parts[1], s.backend.domain) {
+	if len(parts) != 2 || parts[1] == "" {
+		return smtpError(550, gosmtp.EnhancedCode{5, 1, 3}, "invalid recipient address")
+	}
+
+	allowed, err := s.backend.domainAllowed(context.Background(), parts[1])
+	if err != nil {
+		return smtpError(451, gosmtp.EnhancedCode{4, 3, 0}, "temporary domain lookup failure")
+	}
+	if !allowed {
 		return smtpError(550, gosmtp.EnhancedCode{5, 7, 1}, "relay not permitted")
 	}
 

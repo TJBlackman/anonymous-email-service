@@ -3,11 +3,19 @@
     <div>
         <p class="section-label">Disposable address</p>
         <p class="address">{{.Inbox.Address}}</p>
-        <p class="muted">Expires {{.Inbox.ExpiresAt.Format "2006-01-02 15:04:05 MST"}}</p>
+        <p class="muted">{{if .NeverExpires}}Never expires{{else}}Expires {{.Inbox.ExpiresAt.Format "2006-01-02 15:04:05 MST"}}{{end}}</p>
     </div>
     <div class="summary-actions">
         <p><strong>{{.UnreadCount}}</strong> unread</p>
-        <form method="post" action="/inbox/new">
+        <form method="post" action="/inbox/new" class="new-inbox-form">
+            {{if .Domains}}
+            <label class="sr-only" for="domain">Domain</label>
+            <select id="domain" name="domain">
+                {{range .Domains}}
+                <option value="{{.Name}}" {{if eq .Name $.CurrentDomain}}selected{{end}}>{{.Name}}</option>
+                {{end}}
+            </select>
+            {{end}}
             <button type="submit">Generate New Inbox</button>
         </form>
     </div>

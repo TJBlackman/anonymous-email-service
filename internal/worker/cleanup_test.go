@@ -125,5 +125,16 @@ func (s *stubRepository) GetAttachmentsByEmailID(context.Context, int64) ([]*mod
 func (s *stubRepository) GetAttachment(context.Context, int64) (*models.Attachment, error) {
 	return nil, nil
 }
-func (s *stubRepository) Ping(context.Context) error { return nil }
-func (s *stubRepository) Close() error               { return nil }
+func (s *stubRepository) CreateDomain(context.Context, string) (*models.Domain, error) {
+	return nil, nil
+}
+func (s *stubRepository) ListDomains(context.Context, bool) ([]*models.Domain, error) {
+	return nil, nil
+}
+func (s *stubRepository) GetDomain(context.Context, string) (*models.Domain, error) {
+	return nil, nil
+}
+func (s *stubRepository) SetDomainEnabled(context.Context, string, bool) error { return nil }
+func (s *stubRepository) IsDomainEnabled(context.Context, string) (bool, error) { return true, nil }
+func (s *stubRepository) Ping(context.Context) error                           { return nil }
+func (s *stubRepository) Close() error                                         { return nil }

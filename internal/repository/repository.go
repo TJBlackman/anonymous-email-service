@@ -31,6 +31,12 @@ type Repository interface {
 	GetAttachmentsByEmailID(ctx context.Context, emailID int64) ([]*models.Attachment, error)
 	GetAttachment(ctx context.Context, attachmentID int64) (*models.Attachment, error)
 
+	CreateDomain(ctx context.Context, name string) (*models.Domain, error)
+	ListDomains(ctx context.Context, enabledOnly bool) ([]*models.Domain, error)
+	GetDomain(ctx context.Context, name string) (*models.Domain, error)
+	SetDomainEnabled(ctx context.Context, name string, enabled bool) error
+	IsDomainEnabled(ctx context.Context, name string) (bool, error)
+
 	Ping(ctx context.Context) error
 	Close() error
 }

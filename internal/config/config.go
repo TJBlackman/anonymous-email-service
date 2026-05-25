@@ -9,11 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
+
+	"anonymous-email-service/internal/domainutil"
 )
 
 type Config struct {
 	Domain                    string
+	SMTPHostname              string
 	SMTPListenAddr            string
 	HTTPListenAddr            string
 	DatabasePath              string
@@ -28,15 +30,16 @@ type Config struct {
 }
 
 const (
+	defaultSMTPHostname              = "localhost"
 	defaultSMTPListenAddr            = ":25"
 	defaultHTTPListenAddr            = ":8080"
 	defaultDatabasePath              = "./data/mail.db"
-	defaultInboxTTLHours             = 24
+	defaultInboxTTLDays              = 60
 	defaultMaxEmailSizeMB            = 10
 	defaultMaxAttachSizeMB           = 5
 	defaultCleanupMins               = 15
 	defaultCookieSecure              = false
-	defaultInboxCreateLimitPerHour   = 10
+	defaultInboxCreateLimitPerHour   = 2
 	defaultSMTPConnectionLimitPerMin = 30
 	defaultLogLevel                  = "info"
 )
@@ -53,12 +56,12 @@ func Load() (*Config, error) {
 	smtpListenAddr, smtpErr := loadListenAddr("SMTP_LISTEN_ADDR", defaultSMTPListenAddr)
 	httpListenAddr, httpErr := loadListenAddr("HTTP_LISTEN_ADDR", defaultHTTPListenAddr)
 	databasePath, databasePathErr := loadDatabasePath()
-	inboxTTLHours, inboxTTLErr := loadPositiveInt("INBOX_TTL_HOURS", defaultInboxTTLHours)
+	inboxTTLDays, inboxTTLErr := loadNonNegativeInt("INBOX_TTL_DAYS", defaultInboxTTLDays)
 	maxEmailSizeMB, maxEmailSizeErr := loadPositiveInt("MAX_EMAIL_SIZE_MB", defaultMaxEmailSizeMB)
 	maxAttachmentSizeMB, maxAttachmentSizeErr := loadPositiveInt("MAX_ATTACHMENT_MB", defaultMaxAttachSizeMB)
 	cleanupIntervalMins, cleanupIntervalErr := loadPositiveInt("CLEANUP_INTERVAL_MIN", defaultCleanupMins)
 	cookieSecure, cookieSecureErr := loadBool("COOKIE_SECURE", defaultCookieSecure)
-	inboxCreateLimitPerHour, inboxCreateLimitErr := loadPositiveInt("INBOX_CREATE_LIMIT_PER_HOUR", defaultInboxCreateLimitPerHour)
+	inboxCreateLimitPerHour, inboxCreateLimitErr := loadNonNegativeInt("INBOX_CREATE_LIMIT_PER_HOUR", defaultInboxCreateLimitPerHour)
 	smtpConnectionLimitPerMin, smtpConnectionLimitErr := loadPositiveInt("SMTP_CONNECTION_LIMIT_PER_MIN", defaultSMTPConnectionLimitPerMin)
 	logLevel, logLevelErr := loadLogLevel()
 
@@ -87,10 +90,11 @@ func Load() (*Config, error) {
 
 	return &Config{
 		Domain:                    domain,
+		SMTPHostname:              resolveSMTPHostname(domain),
 		SMTPListenAddr:            smtpListenAddr,
 		HTTPListenAddr:            httpListenAddr,
 		DatabasePath:              databasePath,
-		InboxTTL:                  time.Duration(inboxTTLHours) * time.Hour,
+		InboxTTL:                  time.Duration(inboxTTLDays) * 24 * time.Hour,
 		MaxEmailSize:              int64(maxEmailSizeMB) * 1024 * 1024,
 		MaxAttachmentSize:         int64(maxAttachmentSizeMB) * 1024 * 1024,
 		CleanupInterval:           time.Duration(cleanupIntervalMins) * time.Minute,
@@ -114,20 +118,35 @@ func LogLevel(level string) slog.Level {
 	}
 }
 
+// loadDomain reads the optional DOMAIN bootstrap seed. When set, the value must
+// pass the shared domain validation; when unset/blank it returns an empty seed,
+// since domains are now managed at runtime via the admin UI.
 func loadDomain() (string, error) {
-	domain := strings.ToLower(strings.TrimSpace(os.Getenv("DOMAIN")))
-	switch {
-	case domain == "":
-		return "", fmt.Errorf("DOMAIN is required")
-	case strings.Contains(domain, "@"):
-		return "", fmt.Errorf("DOMAIN must not contain @")
-	case strings.IndexFunc(domain, unicode.IsSpace) >= 0:
-		return "", fmt.Errorf("DOMAIN must not contain whitespace")
-	case strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.Contains(domain, ".."):
-		return "", fmt.Errorf("DOMAIN must not start or end with '.' or contain consecutive dots")
+	raw := strings.TrimSpace(os.Getenv("DOMAIN"))
+	if raw == "" {
+		return "", nil
 	}
 
+	domain, err := domainutil.Validate(raw)
+	if err != nil {
+		// domainutil messages start with "domain ..."; reformat with the env
+		// var name so error output reads "DOMAIN must not contain @" etc.
+		return "", fmt.Errorf("DOMAIN%s", strings.TrimPrefix(err.Error(), "domain"))
+	}
 	return domain, nil
+}
+
+// resolveSMTPHostname picks the EHLO banner hostname: SMTP_HOSTNAME if set,
+// otherwise the DOMAIN seed if present, otherwise a localhost fallback. This is
+// only the greeting string and is not used for recipient validation.
+func resolveSMTPHostname(domain string) string {
+	if value := strings.TrimSpace(os.Getenv("SMTP_HOSTNAME")); value != "" {
+		return strings.ToLower(value)
+	}
+	if domain != "" {
+		return domain
+	}
+	return defaultSMTPHostname
 }
 
 func loadListenAddr(key, fallback string) (string, error) {
@@ -164,6 +183,23 @@ func loadPositiveInt(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+
+	return parsed, nil
+}
+
+// loadNonNegativeInt parses a setting where 0 is a meaningful "disabled"
+// sentinel (e.g. INBOX_TTL_DAYS=0 means never expire, INBOX_CREATE_LIMIT_PER_HOUR=0
+// means unlimited). Negative values and non-integers are still rejected.
+func loadNonNegativeInt(key string, fallback int) (int, error) {
+	value, usedDefault := loadTrimmedString(key, strconv.Itoa(fallback), true)
+	if !usedDefault && value == "" {
+		return 0, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", key)
 	}
 
 	return parsed, nil

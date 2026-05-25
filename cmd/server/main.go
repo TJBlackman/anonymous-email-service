@@ -45,8 +45,12 @@ func run() error {
 	}
 	defer repo.Close()
 
+	if err := seedDomain(context.Background(), repo, cfg.Domain, logger); err != nil {
+		return err
+	}
+
 	handler, err := web.RegisterRoutes(repo, logger, "templates", web.Options{
-		Domain:             cfg.Domain,
+		DefaultDomain:      cfg.Domain,
 		InboxTTL:           cfg.InboxTTL,
 		CookieSecure:       cfg.CookieSecure,
 		CreateInboxLimiter: inboxCreateLimiter,
@@ -117,6 +121,35 @@ func run() error {
 	}
 
 	return firstErr
+}
+
+// seedDomain inserts the optional DOMAIN bootstrap seed as the first enabled
+// domain when the domains table is empty. This keeps deployments that set
+// DOMAIN working without manual admin steps. When no enabled domain exists
+// afterward, it logs a warning since inbox creation and SMTP acceptance will
+// fail until an admin adds one via /admin.
+func seedDomain(ctx context.Context, repo repository.Repository, seed string, logger *slog.Logger) error {
+	domains, err := repo.ListDomains(ctx, false)
+	if err != nil {
+		return err
+	}
+
+	if len(domains) == 0 && seed != "" {
+		if _, err := repo.CreateDomain(ctx, seed); err != nil && !errors.Is(err, repository.ErrConflict) {
+			return err
+		}
+		logger.Info("seeded bootstrap domain", "domain", seed)
+		return nil
+	}
+
+	enabled, err := repo.ListDomains(ctx, true)
+	if err != nil {
+		return err
+	}
+	if len(enabled) == 0 {
+		logger.Warn("no enabled domains configured; inbox creation and SMTP will be rejected until a domain is added at /admin")
+	}
+	return nil
 }
 
 func shutdownServers(httpServer *http.Server, smtpServer *gosmtp.Server, cause error) error {

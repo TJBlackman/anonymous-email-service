@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_domains_enabled ON domains(enabled);

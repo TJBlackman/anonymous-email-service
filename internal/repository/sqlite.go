@@ -51,13 +51,14 @@ func (s *SQLite) init(ctx context.Context) error {
 		return fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
 
-	migration, err := loadInitialMigration()
-	if err != nil {
-		return err
-	}
-
-	if err := s.execScript(ctx, migration); err != nil {
-		return fmt.Errorf("apply initial migration: %w", err)
+	for _, name := range []string{"001_initial.sql", "002_domains.sql"} {
+		migration, err := loadMigration(name)
+		if err != nil {
+			return err
+		}
+		if err := s.execScript(ctx, migration); err != nil {
+			return fmt.Errorf("apply migration %q: %w", name, err)
+		}
 	}
 
 	return nil
@@ -68,13 +69,13 @@ func (s *SQLite) execScript(ctx context.Context, script string) error {
 	return err
 }
 
-func loadInitialMigration() (string, error) {
+func loadMigration(name string) (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return "", fmt.Errorf("resolve migration path: runtime.Caller failed")
 	}
 
-	path := filepath.Join(filepath.Dir(file), "..", "..", "migrations", "001_initial.sql")
+	path := filepath.Join(filepath.Dir(file), "..", "..", "migrations", name)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read migration %q: %w", path, err)
@@ -330,6 +331,100 @@ func (s *SQLite) GetAttachment(ctx context.Context, attachmentID int64) (*models
 	return scanAttachmentRow(row)
 }
 
+func (s *SQLite) CreateDomain(ctx context.Context, name string) (*models.Domain, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO domains (name, enabled)
+		VALUES (?, 1)
+	`, name)
+	if err != nil {
+		return nil, mapSQLError("create domain", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("create domain: read inserted id: %w", err)
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, enabled, created_at
+		FROM domains
+		WHERE id = ?
+	`, id)
+	return scanDomain(row, "create domain")
+}
+
+func (s *SQLite) ListDomains(ctx context.Context, enabledOnly bool) ([]*models.Domain, error) {
+	query := `
+		SELECT id, name, enabled, created_at
+		FROM domains
+	`
+	if enabledOnly {
+		query += " WHERE enabled = 1"
+	}
+	query += " ORDER BY created_at ASC, id ASC"
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list domains: %w", err)
+	}
+	defer rows.Close()
+
+	var domains []*models.Domain
+	for rows.Next() {
+		domain, err := scanDomain(rows, "list domains")
+		if err != nil {
+			return nil, err
+		}
+		domains = append(domains, domain)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list domains: %w", err)
+	}
+
+	return domains, nil
+}
+
+func (s *SQLite) GetDomain(ctx context.Context, name string) (*models.Domain, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, enabled, created_at
+		FROM domains
+		WHERE name = ? COLLATE NOCASE
+	`, strings.TrimSpace(name))
+	return scanDomain(row, "get domain")
+}
+
+func (s *SQLite) SetDomainEnabled(ctx context.Context, name string, enabled bool) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE domains
+		SET enabled = ?
+		WHERE name = ? COLLATE NOCASE
+	`, boolToInt(enabled), strings.TrimSpace(name))
+	if err != nil {
+		return fmt.Errorf("set domain enabled: %w", err)
+	}
+
+	return requireRowsAffected("set domain enabled", result)
+}
+
+func (s *SQLite) IsDomainEnabled(ctx context.Context, name string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM domains
+		WHERE name = ? COLLATE NOCASE AND enabled = 1
+	`, strings.TrimSpace(name)).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("is domain enabled: %w", err)
+	}
+
+	return true, nil
+}
+
 func (s *SQLite) Close() error {
 	if s.db == nil {
 		return nil
@@ -428,6 +523,26 @@ func scanInbox(row scanner, op string) (*models.Inbox, error) {
 	inbox.LastAccessedAt = fromUnix(lastAccessedAt)
 	inbox.ExpiresAt = fromUnix(expiresAt)
 	return inbox, nil
+}
+
+func scanDomain(row scanner, op string) (*models.Domain, error) {
+	domain := &models.Domain{}
+	var enabled int64
+	var createdAt int64
+
+	err := row.Scan(
+		&domain.ID,
+		&domain.Name,
+		&enabled,
+		&createdAt,
+	)
+	if err != nil {
+		return nil, mapScanError(op, err)
+	}
+
+	domain.Enabled = enabled != 0
+	domain.CreatedAt = fromUnix(createdAt)
+	return domain, nil
 }
 
 func scanEmailRow(row scanner) (*models.Email, error) {

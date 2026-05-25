@@ -1,7 +1,9 @@
 package smtp
 
 import (
+	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"anonymous-email-service/internal/clientip"
@@ -13,7 +15,7 @@ import (
 
 type Backend struct {
 	repo              repository.Repository
-	domain            string
+	domains           *domainCache
 	config            *config.Config
 	logger            *slog.Logger
 	connectionLimiter *ratelimit.FixedWindowLimiter
@@ -22,11 +24,27 @@ type Backend struct {
 func NewBackend(repo repository.Repository, cfg *config.Config, logger *slog.Logger, limiter *ratelimit.FixedWindowLimiter) *Backend {
 	return &Backend{
 		repo:              repo,
-		domain:            cfg.Domain,
+		domains:           newDomainCache(domainCacheTTL),
 		config:            cfg,
 		logger:            logger,
 		connectionLimiter: limiter,
 	}
+}
+
+// domainAllowed reports whether inbound mail should be accepted for the given
+// recipient domain, consulting the short-lived cache before the database.
+func (b *Backend) domainAllowed(ctx context.Context, name string) (bool, error) {
+	name = strings.ToLower(name)
+	if enabled, ok := b.domains.get(name); ok {
+		return enabled, nil
+	}
+
+	enabled, err := b.repo.IsDomainEnabled(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	b.domains.set(name, enabled)
+	return enabled, nil
 }
 
 func NewServer(repo repository.Repository, cfg *config.Config, logger *slog.Logger, limiter *ratelimit.FixedWindowLimiter) *gosmtp.Server {
@@ -34,7 +52,7 @@ func NewServer(repo repository.Repository, cfg *config.Config, logger *slog.Logg
 
 	server := gosmtp.NewServer(backend)
 	server.Addr = cfg.SMTPListenAddr
-	server.Domain = cfg.Domain
+	server.Domain = cfg.SMTPHostname
 	server.MaxMessageBytes = cfg.MaxEmailSize
 	server.MaxRecipients = 1
 	server.AllowInsecureAuth = false

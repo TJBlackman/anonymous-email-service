@@ -369,7 +369,7 @@ func TestPostRequestBodyLimitRejectsOversizedPayloads(t *testing.T) {
 func TestExistingCookieBypassesCreateLimitButNewInboxIsRateLimited(t *testing.T) {
 	repo := newMemoryRepository()
 	handler := newTestHandlerWithOptions(t, repo, Options{
-		Domain:             "example.test",
+		DefaultDomain:      "example.test",
 		InboxTTL:           24 * time.Hour,
 		CreateInboxLimiter: ratelimit.NewFixedWindowLimiter(1, time.Hour),
 	})
@@ -446,8 +446,8 @@ func newTestHandler(t *testing.T, repo *memoryRepository) http.Handler {
 	t.Helper()
 
 	return newTestHandlerWithOptions(t, repo, Options{
-		Domain:   "example.test",
-		InboxTTL: 24 * time.Hour,
+		DefaultDomain: "example.test",
+		InboxTTL:      24 * time.Hour,
 	})
 }
 
@@ -477,25 +477,31 @@ type memoryRepository struct {
 	nextInboxID      int64
 	nextEmailID      int64
 	nextAttachmentID int64
+	nextDomainID     int64
 	inboxes          map[int64]*models.Inbox
 	inboxTokens      map[string]int64
 	inboxAddresses   map[string]int64
 	emails           map[int64]*models.Email
 	attachments      map[int64]*models.Attachment
+	domains          []*models.Domain
 	pingErr          error
 }
 
 func newMemoryRepository() *memoryRepository {
-	return &memoryRepository{
+	m := &memoryRepository{
 		nextInboxID:      1,
 		nextEmailID:      1,
 		nextAttachmentID: 1,
+		nextDomainID:     1,
 		inboxes:          map[int64]*models.Inbox{},
 		inboxTokens:      map[string]int64{},
 		inboxAddresses:   map[string]int64{},
 		emails:           map[int64]*models.Email{},
 		attachments:      map[int64]*models.Attachment{},
 	}
+	// Seed the default test domain so inbox addresses resolve to example.test.
+	_, _ = m.CreateDomain(context.Background(), "example.test")
+	return m
 }
 
 func (m *memoryRepository) CreateInbox(_ context.Context, inbox *models.Inbox) error {
@@ -698,6 +704,66 @@ func (m *memoryRepository) GetAttachment(_ context.Context, attachmentID int64) 
 	}
 	copy := *attachment
 	return &copy, nil
+}
+
+func (m *memoryRepository) CreateDomain(_ context.Context, name string) (*models.Domain, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, d := range m.domains {
+		if d.Name == name {
+			return nil, repository.ErrConflict
+		}
+	}
+	domain := &models.Domain{
+		ID:        m.nextDomainID,
+		Name:      name,
+		Enabled:   true,
+		CreatedAt: time.Now().UTC(),
+	}
+	m.nextDomainID++
+	m.domains = append(m.domains, domain)
+	return domain, nil
+}
+
+func (m *memoryRepository) ListDomains(_ context.Context, enabledOnly bool) ([]*models.Domain, error) {
+	var out []*models.Domain
+	for _, d := range m.domains {
+		if enabledOnly && !d.Enabled {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (m *memoryRepository) GetDomain(_ context.Context, name string) (*models.Domain, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, d := range m.domains {
+		if d.Name == name {
+			return d, nil
+		}
+	}
+	return nil, repository.ErrNotFound
+}
+
+func (m *memoryRepository) SetDomainEnabled(_ context.Context, name string, enabled bool) error {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, d := range m.domains {
+		if d.Name == name {
+			d.Enabled = enabled
+			return nil
+		}
+	}
+	return repository.ErrNotFound
+}
+
+func (m *memoryRepository) IsDomainEnabled(_ context.Context, name string) (bool, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, d := range m.domains {
+		if d.Name == name {
+			return d.Enabled, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *memoryRepository) Ping(context.Context) error { return m.pingErr }

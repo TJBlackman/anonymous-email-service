@@ -18,10 +18,13 @@ import (
 )
 
 type indexData struct {
-	Title       string
-	Inbox       *models.Inbox
-	UnreadCount int
-	Emails      []*models.Email
+	Title         string
+	Inbox         *models.Inbox
+	UnreadCount   int
+	Emails        []*models.Email
+	Domains       []*models.Domain
+	CurrentDomain string
+	NeverExpires  bool
 }
 
 type emailData struct {
@@ -71,11 +74,21 @@ func (a *app) HandleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	domains, err := a.repo.ListDomains(r.Context(), true)
+	if err != nil {
+		a.logError("load domains failed", err)
+		http.Error(w, "failed to load inbox", http.StatusInternalServerError)
+		return
+	}
+
 	if err := a.templates.index.ExecuteTemplate(w, "base", indexData{
-		Title:       "Anonymous Inbox",
-		Inbox:       inbox,
-		UnreadCount: unreadCount,
-		Emails:      emails,
+		Title:         "Anonymous Inbox",
+		Inbox:         inbox,
+		UnreadCount:   unreadCount,
+		Emails:        emails,
+		Domains:       domains,
+		CurrentDomain: domainOf(inbox.Address),
+		NeverExpires:  inbox.ExpiresAt.Equal(neverExpires),
 	}); err != nil {
 		a.logError("render index failed", err)
 		http.Error(w, "template rendering failed", http.StatusInternalServerError)
@@ -212,11 +225,34 @@ func (a *app) HandleDeleteEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) HandleNewInbox(w http.ResponseWriter, r *http.Request) {
-	inbox, err := a.createInbox(r.Context(), clientip.FromHTTPRequest(r))
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	domain := strings.ToLower(strings.TrimSpace(r.PostFormValue("domain")))
+	if domain != "" {
+		enabled, err := a.repo.IsDomainEnabled(r.Context(), domain)
+		if err != nil {
+			a.logError("check domain enabled failed", err)
+			http.Error(w, "failed to create inbox", http.StatusInternalServerError)
+			return
+		}
+		if !enabled {
+			http.Error(w, "selected domain is not available", http.StatusBadRequest)
+			return
+		}
+	}
+
+	inbox, err := a.createInbox(r.Context(), clientip.FromHTTPRequest(r), domain)
 	if err != nil {
 		var limitErr *rateLimitError
 		if errors.As(err, &limitErr) {
 			writeRateLimitResponse(w, limitErr.RetryAfter)
+			return
+		}
+		if errors.Is(err, errNoDomainAvailable) {
+			http.Error(w, "no domains are configured", http.StatusServiceUnavailable)
 			return
 		}
 		a.logError("create new inbox failed", err)
@@ -226,6 +262,14 @@ func (a *app) HandleNewInbox(w http.ResponseWriter, r *http.Request) {
 
 	a.setInboxCookie(w, inbox.Token)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// domainOf returns the domain portion of an email address, or "" if absent.
+func domainOf(address string) string {
+	if idx := strings.LastIndex(address, "@"); idx >= 0 {
+		return address[idx+1:]
+	}
+	return ""
 }
 
 func (a *app) HandleAPIEmails(w http.ResponseWriter, r *http.Request) {
@@ -319,7 +363,7 @@ func (a *app) setInboxCookie(w http.ResponseWriter, token string) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   a.options.CookieSecure,
-		MaxAge:   int(a.options.InboxTTL.Seconds()),
+		MaxAge:   a.options.cookieMaxAge(),
 	})
 }
 

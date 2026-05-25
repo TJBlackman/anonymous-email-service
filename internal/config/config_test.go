@@ -7,27 +7,58 @@ import (
 	"time"
 )
 
-func TestLoadRequiresDomain(t *testing.T) {
+func TestLoadAllowsMissingDomain(t *testing.T) {
 	t.Setenv("DOMAIN", "")
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error when DOMAIN is missing")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "DOMAIN is required") {
-		t.Fatalf("error = %q, want DOMAIN requirement", err)
+	if cfg.Domain != "" {
+		t.Fatalf("Domain = %q, want empty (domains managed at runtime)", cfg.Domain)
+	}
+	if cfg.SMTPHostname != defaultSMTPHostname {
+		t.Fatalf("SMTPHostname = %q, want %q", cfg.SMTPHostname, defaultSMTPHostname)
 	}
 }
 
-func TestLoadRejectsBlankDomain(t *testing.T) {
+func TestLoadAllowsBlankDomain(t *testing.T) {
 	t.Setenv("DOMAIN", "   ")
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error when DOMAIN is blank")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "DOMAIN is required") {
-		t.Fatalf("error = %q, want DOMAIN requirement", err)
+	if cfg.Domain != "" {
+		t.Fatalf("Domain = %q, want empty", cfg.Domain)
+	}
+}
+
+func TestLoadResolvesSMTPHostname(t *testing.T) {
+	tests := []struct {
+		name     string
+		domain   string
+		hostname string
+		want     string
+	}{
+		{name: "explicit hostname wins", domain: "example.test", hostname: "Mail.Example.Test", want: "mail.example.test"},
+		{name: "falls back to domain", domain: "example.test", hostname: "", want: "example.test"},
+		{name: "falls back to localhost", domain: "", hostname: "", want: defaultSMTPHostname},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DOMAIN", tt.domain)
+			t.Setenv("SMTP_HOSTNAME", tt.hostname)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+			if cfg.SMTPHostname != tt.want {
+				t.Fatalf("SMTPHostname = %q, want %q", cfg.SMTPHostname, tt.want)
+			}
+		})
 	}
 }
 
@@ -51,8 +82,8 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.DatabasePath != defaultDatabasePath {
 		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, defaultDatabasePath)
 	}
-	if cfg.InboxTTL != time.Duration(defaultInboxTTLHours)*time.Hour {
-		t.Fatalf("InboxTTL = %v, want %v", cfg.InboxTTL, time.Duration(defaultInboxTTLHours)*time.Hour)
+	if cfg.InboxTTL != time.Duration(defaultInboxTTLDays)*24*time.Hour {
+		t.Fatalf("InboxTTL = %v, want %v", cfg.InboxTTL, time.Duration(defaultInboxTTLDays)*24*time.Hour)
 	}
 	if cfg.MaxEmailSize != int64(defaultMaxEmailSizeMB)*1024*1024 {
 		t.Fatalf("MaxEmailSize = %d, want %d", cfg.MaxEmailSize, int64(defaultMaxEmailSizeMB)*1024*1024)
@@ -82,7 +113,7 @@ func TestLoadTrimsAndNormalizesValidOverrides(t *testing.T) {
 	t.Setenv("SMTP_LISTEN_ADDR", " 127.0.0.1:2525 ")
 	t.Setenv("HTTP_LISTEN_ADDR", " [::1]:8081 ")
 	t.Setenv("DATABASE_PATH", " ./data/custom.db ")
-	t.Setenv("INBOX_TTL_HOURS", " 48 ")
+	t.Setenv("INBOX_TTL_DAYS", " 48 ")
 	t.Setenv("MAX_EMAIL_SIZE_MB", " 20 ")
 	t.Setenv("MAX_ATTACHMENT_MB", " 4 ")
 	t.Setenv("CLEANUP_INTERVAL_MIN", " 5 ")
@@ -108,8 +139,8 @@ func TestLoadTrimsAndNormalizesValidOverrides(t *testing.T) {
 	if cfg.DatabasePath != "./data/custom.db" {
 		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, "./data/custom.db")
 	}
-	if cfg.InboxTTL != 48*time.Hour {
-		t.Fatalf("InboxTTL = %v, want %v", cfg.InboxTTL, 48*time.Hour)
+	if cfg.InboxTTL != 48*24*time.Hour {
+		t.Fatalf("InboxTTL = %v, want %v", cfg.InboxTTL, 48*24*time.Hour)
 	}
 	if cfg.MaxEmailSize != 20*1024*1024 {
 		t.Fatalf("MaxEmailSize = %d, want %d", cfg.MaxEmailSize, 20*1024*1024)
@@ -207,17 +238,13 @@ func TestLoadRejectsInvalidPositiveIntegers(t *testing.T) {
 		key   string
 		value string
 	}{
-		{name: "ttl non integer", key: "INBOX_TTL_HOURS", value: "invalid"},
 		{name: "email size non integer", key: "MAX_EMAIL_SIZE_MB", value: "invalid"},
 		{name: "attachment size non integer", key: "MAX_ATTACHMENT_MB", value: "invalid"},
 		{name: "cleanup interval non integer", key: "CLEANUP_INTERVAL_MIN", value: "invalid"},
-		{name: "create limit non integer", key: "INBOX_CREATE_LIMIT_PER_HOUR", value: "invalid"},
 		{name: "smtp limit non integer", key: "SMTP_CONNECTION_LIMIT_PER_MIN", value: "invalid"},
-		{name: "ttl zero", key: "INBOX_TTL_HOURS", value: "0"},
 		{name: "email size negative", key: "MAX_EMAIL_SIZE_MB", value: "-1"},
 		{name: "attachment size zero", key: "MAX_ATTACHMENT_MB", value: "0"},
 		{name: "cleanup interval negative", key: "CLEANUP_INTERVAL_MIN", value: "-5"},
-		{name: "create limit zero", key: "INBOX_CREATE_LIMIT_PER_HOUR", value: "0"},
 		{name: "smtp limit negative", key: "SMTP_CONNECTION_LIMIT_PER_MIN", value: "-1"},
 	}
 
@@ -234,6 +261,55 @@ func TestLoadRejectsInvalidPositiveIntegers(t *testing.T) {
 				t.Fatalf("error = %q, want positive integer validation for %s", err, tt.key)
 			}
 		})
+	}
+}
+
+func TestLoadRejectsInvalidNonNegativeIntegers(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "ttl non integer", key: "INBOX_TTL_DAYS", value: "invalid"},
+		{name: "ttl negative", key: "INBOX_TTL_DAYS", value: "-1"},
+		{name: "create limit non integer", key: "INBOX_CREATE_LIMIT_PER_HOUR", value: "invalid"},
+		{name: "create limit negative", key: "INBOX_CREATE_LIMIT_PER_HOUR", value: "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DOMAIN", "example.test")
+			t.Setenv(tt.key, tt.value)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.key+" must be a non-negative integer") {
+				t.Fatalf("error = %q, want non-negative integer validation for %s", err, tt.key)
+			}
+		})
+	}
+}
+
+// TestLoadAcceptsZeroForDisableableSettings verifies the 0-as-sentinel meaning:
+// INBOX_TTL_DAYS=0 disables expiry and INBOX_CREATE_LIMIT_PER_HOUR=0 disables the
+// rate limit.
+func TestLoadAcceptsZeroForDisableableSettings(t *testing.T) {
+	t.Setenv("DOMAIN", "example.test")
+	t.Setenv("INBOX_TTL_DAYS", "0")
+	t.Setenv("INBOX_CREATE_LIMIT_PER_HOUR", "0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.InboxTTL != 0 {
+		t.Fatalf("InboxTTL = %v, want 0", cfg.InboxTTL)
+	}
+	if cfg.InboxCreateLimitPerHour != 0 {
+		t.Fatalf("InboxCreateLimitPerHour = %d, want 0", cfg.InboxCreateLimitPerHour)
 	}
 }
 

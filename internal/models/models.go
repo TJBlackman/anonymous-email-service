@@ -29,6 +29,13 @@ type Email struct {
 	IsRead         bool
 }
 
+type Domain struct {
+	ID        int64
+	Name      string
+	Enabled   bool
+	CreatedAt time.Time
+}
+
 type Attachment struct {
 	ID          int64
 	EmailID     int64

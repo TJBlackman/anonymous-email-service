@@ -1,0 +1,34 @@
+{{define "content"}}
+<section class="panel">
+    <div class="section-heading">
+        <h2>Domains</h2>
+        <a href="/">Back to inbox</a>
+    </div>
+
+    {{if .Error}}
+    <p class="empty-state" role="alert">{{.Error}}</p>
+    {{end}}
+
+    <form method="post" action="/admin/domains" class="new-inbox-form">
+        <label class="sr-only" for="name">New domain</label>
+        <input id="name" name="name" type="text" placeholder="example.com" required>
+        <button type="submit">Add Domain</button>
+    </form>
+
+    {{if .Domains}}
+    <ul class="email-list">
+        {{range .Domains}}
+        <li class="email-row">
+            <span class="email-subject">{{.Name}}</span>
+            <span class="email-sender">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+            <form method="post" action="/admin/domains/{{.Name}}/toggle">
+                <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+            </form>
+        </li>
+        {{end}}
+    </ul>
+    {{else}}
+    <p class="empty-state">No domains configured yet. Add one above before creating inboxes.</p>
+    {{end}}
+</section>
+{{end}}
