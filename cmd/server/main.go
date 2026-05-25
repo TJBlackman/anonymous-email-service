@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"anonymous-email-service/internal/auth"
 	"anonymous-email-service/internal/config"
 	"anonymous-email-service/internal/ratelimit"
 	"anonymous-email-service/internal/repository"
@@ -49,10 +50,18 @@ func run() error {
 		return err
 	}
 
+	adminPasswordHash, err := resolveAdminCredentials(cfg, logger)
+	if err != nil {
+		return err
+	}
+
 	handler, err := web.RegisterRoutes(repo, logger, "templates", web.Options{
 		DefaultDomain:      cfg.Domain,
-		InboxTTL:           cfg.InboxTTL,
 		CookieSecure:       cfg.CookieSecure,
+		SessionTTL:         cfg.SessionTTL,
+		BcryptCost:         cfg.BcryptCost,
+		AdminUsername:      cfg.AdminUsername,
+		AdminPasswordHash:  adminPasswordHash,
 		CreateInboxLimiter: inboxCreateLimiter,
 	})
 	if err != nil {
@@ -121,6 +130,23 @@ func run() error {
 	}
 
 	return firstErr
+}
+
+// resolveAdminCredentials hashes the configured admin password for use by the
+// admin auth realm. Both ADMIN_USERNAME and ADMIN_PASSWORD must be set to enable
+// the admin area; otherwise it logs a warning and returns an empty hash, leaving
+// /admin disabled rather than open.
+func resolveAdminCredentials(cfg *config.Config, logger *slog.Logger) (string, error) {
+	if cfg.AdminUsername == "" || cfg.AdminPassword == "" {
+		logger.Warn("admin credentials not configured; /admin is disabled (set ADMIN_USERNAME and ADMIN_PASSWORD to enable)")
+		return "", nil
+	}
+
+	hash, err := auth.HashPassword(cfg.AdminPassword, cfg.BcryptCost)
+	if err != nil {
+		return "", err
+	}
+	return hash, nil
 }
 
 // seedDomain inserts the optional DOMAIN bootstrap seed as the first enabled

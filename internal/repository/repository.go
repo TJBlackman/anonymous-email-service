@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"anonymous-email-service/internal/models"
 )
@@ -36,6 +37,12 @@ type Repository interface {
 	GetDomain(ctx context.Context, name string) (*models.Domain, error)
 	SetDomainEnabled(ctx context.Context, name string, enabled bool) error
 	IsDomainEnabled(ctx context.Context, name string) (bool, error)
+
+	CreateSession(ctx context.Context, session *models.Session) error
+	GetSession(ctx context.Context, token string) (*models.Session, *models.Inbox, error)
+	DeleteSession(ctx context.Context, token string) error
+	TouchSession(ctx context.Context, token string, expiresAt time.Time) error
+	DeleteExpiredSessions(ctx context.Context) (int64, error)
 
 	Ping(ctx context.Context) error
 	Close() error

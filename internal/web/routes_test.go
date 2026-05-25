@@ -17,12 +17,26 @@ import (
 	"testing"
 	"time"
 
+	"anonymous-email-service/internal/auth"
 	"anonymous-email-service/internal/models"
 	"anonymous-email-service/internal/ratelimit"
 	"anonymous-email-service/internal/repository"
+	"golang.org/x/crypto/bcrypt"
 )
 
-func TestHealthBypassesSessionMiddleware(t *testing.T) {
+// loginInbox seeds a mailbox account and an active session for it, returning the
+// inbox and the session cookie a request should carry to be authenticated.
+func loginInbox(repo *memoryRepository, address string) (*models.Inbox, *http.Cookie) {
+	localPart := address
+	if at := strings.IndexByte(address, '@'); at >= 0 {
+		localPart = address[:at]
+	}
+	inbox := repo.seedInbox(address, localPart, "token-"+localPart, "hash-"+localPart, neverExpires)
+	repo.seedSession("session-"+localPart, inbox.ID, time.Now().Add(7*24*time.Hour))
+	return inbox, &http.Cookie{Name: "session", Value: "session-" + localPart}
+}
+
+func TestHealthBypassesAuth(t *testing.T) {
 	repo := newMemoryRepository()
 	handler := newTestHandler(t, repo)
 
@@ -39,7 +53,7 @@ func TestHealthBypassesSessionMiddleware(t *testing.T) {
 	assertSecurityHeaders(t, rec.Result())
 }
 
-func TestFirstVisitCreatesInboxAndCookie(t *testing.T) {
+func TestLandingPageShownToAnonymousVisitor(t *testing.T) {
 	repo := newMemoryRepository()
 	handler := newTestHandler(t, repo)
 
@@ -50,42 +64,57 @@ func TestFirstVisitCreatesInboxAndCookie(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if len(repo.inboxes) != 1 {
-		t.Fatalf("inboxes = %d, want 1", len(repo.inboxes))
+	if len(repo.inboxes) != 0 {
+		t.Fatalf("inboxes = %d, want 0 (no auto-create)", len(repo.inboxes))
 	}
-	cookies := rec.Result().Cookies()
-	if len(cookies) == 0 || cookies[0].Name != "inbox_token" {
-		t.Fatalf("cookies = %#v, want inbox_token", cookies)
+	body := rec.Body.String()
+	if !strings.Contains(body, "/register") || !strings.Contains(body, "/login") {
+		t.Fatalf("landing body missing create/login links: %q", body)
 	}
 }
 
-func TestValidCookieReusesInbox(t *testing.T) {
+func TestAppRequiresLoginRedirectsHTML(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("existing@example.test", "existing", "token-existing", time.Now().Add(24*time.Hour))
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	req := httptest.NewRequest(http.MethodGet, "/app", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
 	}
-	if len(repo.inboxes) != 1 {
-		t.Fatalf("inboxes = %d, want 1", len(repo.inboxes))
-	}
-	if got := rec.Header().Get("Set-Cookie"); got != "" {
-		t.Fatalf("Set-Cookie = %q, want empty", got)
+	if got := rec.Header().Get("Location"); got != "/login" {
+		t.Fatalf("Location = %q, want /login", got)
 	}
 }
 
-func TestInvalidCookieCreatesReplacementInbox(t *testing.T) {
+func TestAppAPIRequiresLoginReturns401JSON(t *testing.T) {
 	repo := newMemoryRepository()
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: "missing-token"})
+	req := httptest.NewRequest(http.MethodGet, "/app/api/emails", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "authentication required") {
+		t.Fatalf("body = %q, want auth error JSON", rec.Body.String())
+	}
+}
+
+func TestRegisterCreatesAccountAndRevealsPasswordOnce(t *testing.T) {
+	repo := newMemoryRepository()
+	handler := newTestHandler(t, repo)
+
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=example.test"))
+	req.Header.Set("Origin", "http://service.test")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -95,19 +124,188 @@ func TestInvalidCookieCreatesReplacementInbox(t *testing.T) {
 	if len(repo.inboxes) != 1 {
 		t.Fatalf("inboxes = %d, want 1", len(repo.inboxes))
 	}
-	if got := rec.Header().Get("Set-Cookie"); got == "" {
-		t.Fatal("expected replacement Set-Cookie header")
+	var created *models.Inbox
+	for _, inbox := range repo.inboxes {
+		created = inbox
+	}
+	if created.PasswordHash == "" {
+		t.Fatal("created inbox has no password hash")
+	}
+	if !created.ExpiresAt.Equal(neverExpires) {
+		t.Fatalf("ExpiresAt = %v, want neverExpires", created.ExpiresAt)
+	}
+	// Registration must not log the user in: no session cookie is set.
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			t.Fatal("register set a session cookie; should require explicit login")
+		}
+	}
+	// The plaintext password is revealed once in the response body and must not
+	// equal the stored hash.
+	body := rec.Body.String()
+	if strings.Contains(body, created.PasswordHash) {
+		t.Fatal("response body leaked the password hash")
+	}
+	if !strings.Contains(body, created.Address) {
+		t.Fatalf("response body missing created address: %q", body)
+	}
+}
+
+func TestRegisterRateLimited(t *testing.T) {
+	repo := newMemoryRepository()
+	handler := newTestHandlerWithOptions(t, repo, Options{
+		DefaultDomain:      "example.test",
+		SessionTTL:         7 * 24 * time.Hour,
+		BcryptCost:         bcrypt.MinCost,
+		CreateInboxLimiter: ratelimit.NewFixedWindowLimiter(1, time.Hour),
+	})
+
+	for i, want := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=example.test"))
+		req.Header.Set("Origin", "http://service.test")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("attempt %d status = %d, want %d", i+1, rec.Code, want)
+		}
+	}
+}
+
+func TestLoginSucceedsWithCorrectPassword(t *testing.T) {
+	repo := newMemoryRepository()
+	hash, err := auth.HashPassword("correct horse", bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	repo.seedInbox("user@example.test", "user", "token-user", hash, neverExpires)
+	handler := newTestHandler(t, repo)
+
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/login", strings.NewReader("address=user@example.test&password=correct+horse"))
+	req.Header.Set("Origin", "http://service.test")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
+	}
+	if got := rec.Header().Get("Location"); got != "/app" {
+		t.Fatalf("Location = %q, want /app", got)
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatal("login did not set a session cookie")
+	}
+	if len(repo.sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(repo.sessions))
+	}
+}
+
+func TestLoginFailsGenericallyForWrongPasswordOrUnknownAddress(t *testing.T) {
+	hash, err := auth.HashPassword("correct horse", bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+
+	cases := []struct{ name, form string }{
+		{"wrong password", "address=user@example.test&password=wrong"},
+		{"unknown address", "address=ghost@example.test&password=correct+horse"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMemoryRepository()
+			repo.seedInbox("user@example.test", "user", "token-user", hash, neverExpires)
+			handler := newTestHandler(t, repo)
+
+			req := httptest.NewRequest(http.MethodPost, "http://service.test/login", strings.NewReader(tc.form))
+			req.Header.Set("Origin", "http://service.test")
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+			if !strings.Contains(rec.Body.String(), "Invalid email address or password.") {
+				t.Fatalf("body missing generic error: %q", rec.Body.String())
+			}
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == "session" && c.Value != "" {
+					t.Fatal("failed login set a session cookie")
+				}
+			}
+		})
+	}
+}
+
+func TestSessionRefreshExtendsExpiryAndReissuesCookie(t *testing.T) {
+	repo := newMemoryRepository()
+	inbox, cookie := loginInbox(repo, "refresh@example.test")
+	// Start the session close to expiry so the refresh is observable.
+	repo.sessions[cookie.Value].ExpiresAt = time.Now().Add(time.Minute).UTC()
+	handler := newTestHandler(t, repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/app", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := repo.sessions[cookie.Value].ExpiresAt; got.Before(time.Now().Add(6 * 24 * time.Hour)) {
+		t.Fatalf("session ExpiresAt = %v, want ~7 days out", got)
+	}
+	var reissued *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			reissued = c
+		}
+	}
+	if reissued == nil || reissued.MaxAge < 6*24*60*60 {
+		t.Fatalf("reissued cookie = %#v, want ~7-day MaxAge", reissued)
+	}
+	_ = inbox
+}
+
+func TestLogoutClearsSession(t *testing.T) {
+	repo := newMemoryRepository()
+	_, cookie := loginInbox(repo, "bye@example.test")
+	handler := newTestHandler(t, repo)
+
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/logout", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("Origin", "http://service.test")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
+	}
+	if _, ok := repo.sessions[cookie.Value]; ok {
+		t.Fatal("session still present after logout")
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" && c.MaxAge >= 0 {
+			t.Fatalf("logout cookie MaxAge = %d, want negative", c.MaxAge)
+		}
 	}
 }
 
 func TestIndexRendersStoredEmails(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("inbox@example.test", "inbox", "token-inbox", time.Now().Add(24*time.Hour))
+	inbox, cookie := loginInbox(repo, "inbox@example.test")
 	repo.seedEmail(inbox.ID, "Welcome", false)
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	req := httptest.NewRequest(http.MethodGet, "/app", nil)
+	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -125,12 +323,12 @@ func TestIndexRendersStoredEmails(t *testing.T) {
 
 func TestViewEmailMarksRead(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("inbox@example.test", "inbox", "token-inbox", time.Now().Add(24*time.Hour))
+	inbox, cookie := loginInbox(repo, "inbox@example.test")
 	email := repo.seedEmail(inbox.ID, "Unread", false)
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/email/"+itoa(email.ID), nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	req := httptest.NewRequest(http.MethodGet, "/app/email/"+itoa(email.ID), nil)
+	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -144,14 +342,14 @@ func TestViewEmailMarksRead(t *testing.T) {
 
 func TestAttachmentDownloadEnforcesOwnership(t *testing.T) {
 	repo := newMemoryRepository()
-	owner := repo.seedInbox("owner@example.test", "owner", "token-owner", time.Now().Add(24*time.Hour))
-	other := repo.seedInbox("other@example.test", "other", "token-other", time.Now().Add(24*time.Hour))
+	_, ownerCookie := loginInbox(repo, "owner@example.test")
+	other, _ := loginInbox(repo, "other@example.test")
 	otherEmail := repo.seedEmail(other.ID, "Other", false)
 	attachment := repo.seedAttachment(otherEmail.ID, "other.txt", []byte("secret"))
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/email/"+itoa(otherEmail.ID)+"/attachment/"+itoa(attachment.ID), nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: owner.Token})
+	req := httptest.NewRequest(http.MethodGet, "/app/email/"+itoa(otherEmail.ID)+"/attachment/"+itoa(attachment.ID), nil)
+	req.AddCookie(ownerCookie)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -162,12 +360,12 @@ func TestAttachmentDownloadEnforcesOwnership(t *testing.T) {
 
 func TestDeleteEmailRemovesOwnedMail(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("inbox@example.test", "inbox", "token-inbox", time.Now().Add(24*time.Hour))
+	inbox, cookie := loginInbox(repo, "inbox@example.test")
 	email := repo.seedEmail(inbox.ID, "Delete me", false)
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/email/"+itoa(email.ID)+"/delete", nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/app/email/"+itoa(email.ID)+"/delete", nil)
+	req.AddCookie(cookie)
 	req.Header.Set("Origin", "http://service.test")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -180,37 +378,14 @@ func TestDeleteEmailRemovesOwnedMail(t *testing.T) {
 	}
 }
 
-func TestNewInboxRotatesCookie(t *testing.T) {
-	repo := newMemoryRepository()
-	oldInbox := repo.seedInbox("old@example.test", "old", "token-old", time.Now().Add(24*time.Hour))
-	handler := newTestHandler(t, repo)
-
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: oldInbox.Token})
-	req.Header.Set("Origin", "http://service.test")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
-	}
-	if len(repo.inboxes) != 2 {
-		t.Fatalf("inboxes = %d, want 2", len(repo.inboxes))
-	}
-	cookies := rec.Result().Cookies()
-	if len(cookies) == 0 || cookies[0].Value == oldInbox.Token {
-		t.Fatalf("cookies = %#v, want rotated inbox token", cookies)
-	}
-}
-
 func TestAPIEmailsReturnsExpectedShape(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("api@example.test", "api", "token-api", time.Now().Add(24*time.Hour))
+	inbox, cookie := loginInbox(repo, "api@example.test")
 	email := repo.seedEmail(inbox.ID, "API Subject", true)
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/emails", nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	req := httptest.NewRequest(http.MethodGet, "/app/api/emails", nil)
+	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -253,7 +428,7 @@ func TestHealthReturns503WhenRepositoryPingFails(t *testing.T) {
 
 func TestSecurityHeadersAppliedToPagesDownloadsAndStaticAssets(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("headers@example.test", "headers", "token-headers", time.Now().Add(24*time.Hour))
+	inbox, cookie := loginInbox(repo, "headers@example.test")
 	email := repo.seedEmail(inbox.ID, "Header Check", true)
 	attachment := repo.seedAttachment(email.ID, "hello.txt", []byte("payload"))
 	handler := newTestHandler(t, repo)
@@ -266,8 +441,8 @@ func TestSecurityHeadersAppliedToPagesDownloadsAndStaticAssets(t *testing.T) {
 		{
 			name: "index",
 			req: func() *http.Request {
-				req := httptest.NewRequest(http.MethodGet, "/", nil)
-				req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+				req := httptest.NewRequest(http.MethodGet, "/app", nil)
+				req.AddCookie(cookie)
 				return req
 			}(),
 			want: http.StatusOK,
@@ -275,8 +450,8 @@ func TestSecurityHeadersAppliedToPagesDownloadsAndStaticAssets(t *testing.T) {
 		{
 			name: "api",
 			req: func() *http.Request {
-				req := httptest.NewRequest(http.MethodGet, "/api/emails", nil)
-				req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+				req := httptest.NewRequest(http.MethodGet, "/app/api/emails", nil)
+				req.AddCookie(cookie)
 				return req
 			}(),
 			want: http.StatusOK,
@@ -284,8 +459,8 @@ func TestSecurityHeadersAppliedToPagesDownloadsAndStaticAssets(t *testing.T) {
 		{
 			name: "attachment",
 			req: func() *http.Request {
-				req := httptest.NewRequest(http.MethodGet, "/email/"+itoa(email.ID)+"/attachment/"+itoa(attachment.ID), nil)
-				req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+				req := httptest.NewRequest(http.MethodGet, "/app/email/"+itoa(email.ID)+"/attachment/"+itoa(attachment.ID), nil)
+				req.AddCookie(cookie)
 				return req
 			}(),
 			want: http.StatusOK,
@@ -324,7 +499,7 @@ func TestSecurityHeadersAppliedToPagesDownloadsAndStaticAssets(t *testing.T) {
 
 func TestCrossOriginPostsAreRejected(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("cross@example.test", "cross", "token-cross", time.Now().Add(24*time.Hour))
+	inbox, cookie := loginInbox(repo, "cross@example.test")
 	email := repo.seedEmail(inbox.ID, "Cross Origin", false)
 	handler := newTestHandler(t, repo)
 
@@ -332,14 +507,14 @@ func TestCrossOriginPostsAreRejected(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "new inbox", path: "http://service.test/inbox/new"},
-		{name: "delete email", path: "http://service.test/email/" + itoa(email.ID) + "/delete"},
+		{name: "login", path: "http://service.test/login"},
+		{name: "delete email", path: "http://service.test/app/email/" + itoa(email.ID) + "/delete"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
-			req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+			req.AddCookie(cookie)
 			req.Header.Set("Origin", "http://attacker.test")
 
 			rec := httptest.NewRecorder()
@@ -356,7 +531,7 @@ func TestPostRequestBodyLimitRejectsOversizedPayloads(t *testing.T) {
 	repo := newMemoryRepository()
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", bytes.NewReader(bytes.Repeat([]byte("a"), int(maxPostBodyBytes+1))))
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/login", bytes.NewReader(bytes.Repeat([]byte("a"), int(maxPostBodyBytes+1))))
 	req.Header.Set("Origin", "http://service.test")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -366,49 +541,9 @@ func TestPostRequestBodyLimitRejectsOversizedPayloads(t *testing.T) {
 	}
 }
 
-func TestExistingCookieBypassesCreateLimitButNewInboxIsRateLimited(t *testing.T) {
-	repo := newMemoryRepository()
-	handler := newTestHandlerWithOptions(t, repo, Options{
-		DefaultDomain:      "example.test",
-		InboxTTL:           24 * time.Hour,
-		CreateInboxLimiter: ratelimit.NewFixedWindowLimiter(1, time.Hour),
-	})
-
-	firstReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	firstRec := httptest.NewRecorder()
-	handler.ServeHTTP(firstRec, firstReq)
-
-	if firstRec.Code != http.StatusOK {
-		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusOK)
-	}
-	cookies := firstRec.Result().Cookies()
-	if len(cookies) == 0 {
-		t.Fatal("expected inbox cookie")
-	}
-
-	reuseReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	reuseReq.AddCookie(cookies[0])
-	reuseRec := httptest.NewRecorder()
-	handler.ServeHTTP(reuseRec, reuseReq)
-
-	if reuseRec.Code != http.StatusOK {
-		t.Fatalf("reuse status = %d, want %d", reuseRec.Code, http.StatusOK)
-	}
-
-	newInboxReq := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", nil)
-	newInboxReq.AddCookie(cookies[0])
-	newInboxReq.Header.Set("Origin", "http://service.test")
-	newInboxRec := httptest.NewRecorder()
-	handler.ServeHTTP(newInboxRec, newInboxReq)
-
-	if newInboxRec.Code != http.StatusTooManyRequests {
-		t.Fatalf("new inbox status = %d, want %d", newInboxRec.Code, http.StatusTooManyRequests)
-	}
-}
-
 func TestViewEmailSanitizesHTML(t *testing.T) {
 	repo := newMemoryRepository()
-	inbox := repo.seedInbox("html@example.test", "html", "token-html", time.Now().Add(24*time.Hour))
+	inbox, cookie := loginInbox(repo, "html@example.test")
 	email := &models.Email{
 		InboxID:    inbox.ID,
 		Sender:     "sender@example.net",
@@ -422,8 +557,8 @@ func TestViewEmailSanitizesHTML(t *testing.T) {
 	}
 
 	handler := newTestHandler(t, repo)
-	req := httptest.NewRequest(http.MethodGet, "/email/"+itoa(email.ID), nil)
-	req.AddCookie(&http.Cookie{Name: "inbox_token", Value: inbox.Token})
+	req := httptest.NewRequest(http.MethodGet, "/app/email/"+itoa(email.ID), nil)
+	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -447,7 +582,8 @@ func newTestHandler(t *testing.T, repo *memoryRepository) http.Handler {
 
 	return newTestHandlerWithOptions(t, repo, Options{
 		DefaultDomain: "example.test",
-		InboxTTL:      24 * time.Hour,
+		SessionTTL:    7 * 24 * time.Hour,
+		BcryptCost:    bcrypt.MinCost,
 	})
 }
 
@@ -484,6 +620,7 @@ type memoryRepository struct {
 	emails           map[int64]*models.Email
 	attachments      map[int64]*models.Attachment
 	domains          []*models.Domain
+	sessions         map[string]*models.Session
 	pingErr          error
 }
 
@@ -498,6 +635,7 @@ func newMemoryRepository() *memoryRepository {
 		inboxAddresses:   map[string]int64{},
 		emails:           map[int64]*models.Email{},
 		attachments:      map[int64]*models.Attachment{},
+		sessions:         map[string]*models.Session{},
 	}
 	// Seed the default test domain so inbox addresses resolve to example.test.
 	_, _ = m.CreateDomain(context.Background(), "example.test")
@@ -544,11 +682,7 @@ func (m *memoryRepository) GetInboxByAddress(_ context.Context, address string) 
 	if !ok {
 		return nil, repository.ErrNotFound
 	}
-	inbox := m.inboxes[id]
-	if inbox.ExpiresAt.Before(time.Now()) {
-		return nil, repository.ErrNotFound
-	}
-	copy := *inbox
+	copy := *m.inboxes[id]
 	return &copy, nil
 }
 
@@ -766,19 +900,85 @@ func (m *memoryRepository) IsDomainEnabled(_ context.Context, name string) (bool
 	return false, nil
 }
 
+func (m *memoryRepository) CreateSession(_ context.Context, session *models.Session) error {
+	if _, ok := m.sessions[session.Token]; ok {
+		return repository.ErrConflict
+	}
+	copy := *session
+	copy.CreatedAt = time.Now().UTC()
+	copy.ExpiresAt = copy.ExpiresAt.UTC()
+	m.sessions[copy.Token] = &copy
+	*session = copy
+	return nil
+}
+
+func (m *memoryRepository) GetSession(_ context.Context, token string) (*models.Session, *models.Inbox, error) {
+	session, ok := m.sessions[token]
+	if !ok || !session.ExpiresAt.After(time.Now()) {
+		return nil, nil, repository.ErrNotFound
+	}
+	inbox, ok := m.inboxes[session.InboxID]
+	if !ok {
+		return nil, nil, repository.ErrNotFound
+	}
+	sessionCopy := *session
+	inboxCopy := *inbox
+	return &sessionCopy, &inboxCopy, nil
+}
+
+func (m *memoryRepository) DeleteSession(_ context.Context, token string) error {
+	if _, ok := m.sessions[token]; !ok {
+		return repository.ErrNotFound
+	}
+	delete(m.sessions, token)
+	return nil
+}
+
+func (m *memoryRepository) TouchSession(_ context.Context, token string, expiresAt time.Time) error {
+	session, ok := m.sessions[token]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	session.ExpiresAt = expiresAt.UTC()
+	return nil
+}
+
+func (m *memoryRepository) DeleteExpiredSessions(context.Context) (int64, error) {
+	var deleted int64
+	now := time.Now()
+	for token, session := range m.sessions {
+		if !session.ExpiresAt.After(now) {
+			delete(m.sessions, token)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
 func (m *memoryRepository) Ping(context.Context) error { return m.pingErr }
 
 func (m *memoryRepository) Close() error { return nil }
 
-func (m *memoryRepository) seedInbox(address, localPart, token string, expiresAt time.Time) *models.Inbox {
+func (m *memoryRepository) seedInbox(address, localPart, token, passwordHash string, expiresAt time.Time) *models.Inbox {
 	inbox := &models.Inbox{
-		Address:   address,
-		LocalPart: localPart,
-		Token:     token,
-		ExpiresAt: expiresAt,
+		Address:      address,
+		LocalPart:    localPart,
+		Token:        token,
+		PasswordHash: passwordHash,
+		ExpiresAt:    expiresAt,
 	}
 	_ = m.CreateInbox(context.Background(), inbox)
 	return inbox
+}
+
+func (m *memoryRepository) seedSession(token string, inboxID int64, expiresAt time.Time) *models.Session {
+	session := &models.Session{
+		Token:     token,
+		InboxID:   inboxID,
+		ExpiresAt: expiresAt,
+	}
+	_ = m.CreateSession(context.Background(), session)
+	return session
 }
 
 func (m *memoryRepository) seedEmail(inboxID int64, subject string, hasAttachments bool) *models.Email {

@@ -232,3 +232,30 @@ a {
     margin-top: 0.5rem;
   }
 }
+
+.auth-nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 24rem;
+  margin: 1rem 0;
+}
+
+.auth-form label {
+  font-weight: 600;
+}
+
+.auth-form input,
+.auth-form select {
+  padding: 0.5rem;
+}
+
+.auth-form button {
+  margin-top: 0.5rem;
+}

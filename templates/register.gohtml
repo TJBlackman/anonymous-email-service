@@ -1,0 +1,27 @@
+{{define "content"}}
+<section class="panel">
+    <h2>Create an email address</h2>
+    <p class="muted">We generate a random address and a one-time password for you.
+    The password is shown only once after you create the address.</p>
+
+    {{if .Error}}
+    <p class="empty-state" role="alert">{{.Error}}</p>
+    {{end}}
+
+    {{if .Domains}}
+    <form method="post" action="/register" class="auth-form">
+        <label for="domain">Domain</label>
+        <select id="domain" name="domain">
+            {{range .Domains}}
+            <option value="{{.Name}}">{{.Name}}</option>
+            {{end}}
+        </select>
+        <button type="submit">Create address</button>
+    </form>
+    {{else}}
+    <p class="empty-state">No domains are available yet. Please check back later.</p>
+    {{end}}
+
+    <p class="muted">Already have an address? <a href="/login">Log in</a>.</p>
+</section>
+{{end}}

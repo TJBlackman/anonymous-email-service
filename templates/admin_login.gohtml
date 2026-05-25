@@ -1,0 +1,17 @@
+{{define "content"}}
+<section class="panel">
+    <h2>Admin login</h2>
+    {{if .Error}}
+    <p class="empty-state" role="alert">{{.Error}}</p>
+    {{end}}
+    <form method="post" action="/admin/login" class="auth-form">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" required>
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+        <button type="submit">Log in</button>
+    </form>
+</section>
+{{end}}

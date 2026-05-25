@@ -1,4 +1,5 @@
 {{define "content"}}
+<p><a href="/app">&larr; Back to inbox</a></p>
 <section class="panel email-meta">
     <p><strong>From:</strong> {{if .Email.SenderName}}{{.Email.SenderName}} &lt;{{.Email.Sender}}&gt;{{else}}{{.Email.Sender}}{{end}}</p>
     <p><strong>To:</strong> {{.Email.Recipient}}</p>
@@ -19,14 +20,14 @@
     <h2>Attachments</h2>
     <ul class="attachment-list">
         {{range .Attachments}}
-        <li><a href="/email/{{$.Email.ID}}/attachment/{{.ID}}">{{.Filename}}</a> <span class="muted">({{.SizeBytes}} bytes)</span></li>
+        <li><a href="/app/email/{{$.Email.ID}}/attachment/{{.ID}}">{{.Filename}}</a> <span class="muted">({{.SizeBytes}} bytes)</span></li>
         {{end}}
     </ul>
 </section>
 {{end}}
 
 <section class="panel">
-    <form method="post" action="/email/{{.Email.ID}}/delete">
+    <form method="post" action="/app/email/{{.Email.ID}}/delete">
         <button type="submit">Delete Email</button>
     </form>
 </section>

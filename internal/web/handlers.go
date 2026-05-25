@@ -12,24 +12,26 @@ import (
 	"strings"
 	"time"
 
-	"anonymous-email-service/internal/clientip"
 	"anonymous-email-service/internal/models"
 	"anonymous-email-service/internal/repository"
 )
 
+// commonData carries the fields every page template needs via base.gohtml
+// (page title and the logged-in inbox, if any). Page-specific data structs embed
+// it so {{.Title}} and {{.Inbox}} resolve uniformly.
+type commonData struct {
+	Title string
+	Inbox *models.Inbox
+}
+
 type indexData struct {
-	Title         string
-	Inbox         *models.Inbox
-	UnreadCount   int
-	Emails        []*models.Email
-	Domains       []*models.Domain
-	CurrentDomain string
-	NeverExpires  bool
+	commonData
+	UnreadCount int
+	Emails      []*models.Email
 }
 
 type emailData struct {
-	Title            string
-	Inbox            *models.Inbox
+	commonData
 	Email            *models.Email
 	Attachments      []*models.Attachment
 	RenderedBodyHTML template.HTML
@@ -74,21 +76,10 @@ func (a *app) HandleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	domains, err := a.repo.ListDomains(r.Context(), true)
-	if err != nil {
-		a.logError("load domains failed", err)
-		http.Error(w, "failed to load inbox", http.StatusInternalServerError)
-		return
-	}
-
 	if err := a.templates.index.ExecuteTemplate(w, "base", indexData{
-		Title:         "Anonymous Inbox",
-		Inbox:         inbox,
-		UnreadCount:   unreadCount,
-		Emails:        emails,
-		Domains:       domains,
-		CurrentDomain: domainOf(inbox.Address),
-		NeverExpires:  inbox.ExpiresAt.Equal(neverExpires),
+		commonData:  commonData{Title: "Inbox", Inbox: inbox},
+		UnreadCount: unreadCount,
+		Emails:      emails,
 	}); err != nil {
 		a.logError("render index failed", err)
 		http.Error(w, "template rendering failed", http.StatusInternalServerError)
@@ -136,8 +127,7 @@ func (a *app) HandleViewEmail(w http.ResponseWriter, r *http.Request) {
 
 	bodyHTML, bodyText := a.renderEmailBody(email)
 	if err := a.templates.email.ExecuteTemplate(w, "base", emailData{
-		Title:            email.Subject,
-		Inbox:            inbox,
+		commonData:       commonData{Title: email.Subject, Inbox: inbox},
 		Email:            email,
 		Attachments:      attachments,
 		RenderedBodyHTML: bodyHTML,
@@ -221,55 +211,7 @@ func (a *app) HandleDeleteEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (a *app) HandleNewInbox(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-
-	domain := strings.ToLower(strings.TrimSpace(r.PostFormValue("domain")))
-	if domain != "" {
-		enabled, err := a.repo.IsDomainEnabled(r.Context(), domain)
-		if err != nil {
-			a.logError("check domain enabled failed", err)
-			http.Error(w, "failed to create inbox", http.StatusInternalServerError)
-			return
-		}
-		if !enabled {
-			http.Error(w, "selected domain is not available", http.StatusBadRequest)
-			return
-		}
-	}
-
-	inbox, err := a.createInbox(r.Context(), clientip.FromHTTPRequest(r), domain)
-	if err != nil {
-		var limitErr *rateLimitError
-		if errors.As(err, &limitErr) {
-			writeRateLimitResponse(w, limitErr.RetryAfter)
-			return
-		}
-		if errors.Is(err, errNoDomainAvailable) {
-			http.Error(w, "no domains are configured", http.StatusServiceUnavailable)
-			return
-		}
-		a.logError("create new inbox failed", err)
-		http.Error(w, "failed to create inbox", http.StatusInternalServerError)
-		return
-	}
-
-	a.setInboxCookie(w, inbox.Token)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-// domainOf returns the domain portion of an email address, or "" if absent.
-func domainOf(address string) string {
-	if idx := strings.LastIndex(address, "@"); idx >= 0 {
-		return address[idx+1:]
-	}
-	return ""
+	http.Redirect(w, r, "/app", http.StatusSeeOther)
 }
 
 func (a *app) HandleAPIEmails(w http.ResponseWriter, r *http.Request) {
@@ -353,18 +295,6 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
-}
-
-func (a *app) setInboxCookie(w http.ResponseWriter, token string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     a.cookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   a.options.CookieSecure,
-		MaxAge:   a.options.cookieMaxAge(),
-	})
 }
 
 func (a *app) logError(message string, err error) {

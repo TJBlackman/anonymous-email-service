@@ -1,36 +1,24 @@
 {{define "content"}}
 <section class="panel inbox-summary">
     <div>
-        <p class="section-label">Disposable address</p>
+        <p class="section-label">Your address</p>
         <p class="address">{{.Inbox.Address}}</p>
-        <p class="muted">{{if .NeverExpires}}Never expires{{else}}Expires {{.Inbox.ExpiresAt.Format "2006-01-02 15:04:05 MST"}}{{end}}</p>
     </div>
     <div class="summary-actions">
         <p><strong>{{.UnreadCount}}</strong> unread</p>
-        <form method="post" action="/inbox/new" class="new-inbox-form">
-            {{if .Domains}}
-            <label class="sr-only" for="domain">Domain</label>
-            <select id="domain" name="domain">
-                {{range .Domains}}
-                <option value="{{.Name}}" {{if eq .Name $.CurrentDomain}}selected{{end}}>{{.Name}}</option>
-                {{end}}
-            </select>
-            {{end}}
-            <button type="submit">Generate New Inbox</button>
-        </form>
     </div>
 </section>
 
 <section class="panel">
     <div class="section-heading">
         <h2>Recent Emails</h2>
-        <a href="/api/emails">JSON feed</a>
+        <a href="/app/api/emails">JSON feed</a>
     </div>
     {{if .Emails}}
     <ul class="email-list">
         {{range .Emails}}
         <li class="email-row {{if not .IsRead}}is-unread{{end}}">
-            <a href="/email/{{.ID}}" class="email-link">
+            <a href="/app/email/{{.ID}}" class="email-link">
                 <span class="email-subject">{{.Subject}}</span>
                 <span class="email-sender">{{if .SenderName}}{{.SenderName}} &lt;{{.Sender}}&gt;{{else}}{{.Sender}}{{end}}</span>
                 <span class="email-time">{{.ReceivedAt.Format "2006-01-02 15:04:05 MST"}}</span>

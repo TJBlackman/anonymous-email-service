@@ -127,9 +127,9 @@ func assertInboxConstraintsAndDefaults(t *testing.T, db *sql.DB) {
 	now := time.Now().Unix()
 
 	result, err := db.Exec(`
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, "User@example.test", "User", "token-1", now+3600)
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, "User@example.test", "User", "token-1", "hash-1", now+3600)
 	if err != nil {
 		t.Fatalf("insert inbox error = %v", err)
 	}
@@ -140,9 +140,9 @@ func assertInboxConstraintsAndDefaults(t *testing.T, db *sql.DB) {
 	}
 
 	_, err = db.Exec(`
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, "user@example.test", "user", "token-2", now+3600)
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, "user@example.test", "user", "token-2", "hash-2", now+3600)
 	if err == nil {
 		t.Fatal("expected case-insensitive unique constraint on inbox address")
 	}
@@ -151,9 +151,9 @@ func assertInboxConstraintsAndDefaults(t *testing.T, db *sql.DB) {
 	}
 
 	_, err = db.Exec(`
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, "other@example.test", "other", "token-1", now+3600)
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, "other@example.test", "other", "token-1", "hash-3", now+3600)
 	if err == nil {
 		t.Fatal("expected unique constraint on inbox token")
 	}
@@ -190,9 +190,9 @@ func assertEmailDefaults(t *testing.T, db *sql.DB) {
 	now := time.Now().Unix()
 
 	result, err := db.Exec(`
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, "email-defaults@example.test", "email-defaults", "token-email-defaults", now+3600)
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, "email-defaults@example.test", "email-defaults", "token-email-defaults", "hash-email-defaults", now+3600)
 	if err != nil {
 		t.Fatalf("insert inbox for email defaults error = %v", err)
 	}
@@ -263,9 +263,9 @@ func assertAttachmentBlobStorage(t *testing.T, db *sql.DB) {
 	now := time.Now().Unix()
 
 	result, err := db.Exec(`
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, "blob@example.test", "blob", "token-blob", now+3600)
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, "blob@example.test", "blob", "token-blob", "hash-blob", now+3600)
 	if err != nil {
 		t.Fatalf("insert inbox for attachment test error = %v", err)
 	}
@@ -327,9 +327,9 @@ func assertCascadeDeleteFromEmailToAttachments(t *testing.T, db *sql.DB) {
 	now := time.Now().Unix()
 
 	result, err := db.Exec(`
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, "email-cascade@example.test", "email-cascade", "token-email-cascade", now+3600)
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, "email-cascade@example.test", "email-cascade", "token-email-cascade", "hash-email-cascade", now+3600)
 	if err != nil {
 		t.Fatalf("insert inbox for email cascade test error = %v", err)
 	}
@@ -379,9 +379,9 @@ func assertCascadeDeleteFromInboxToEmails(t *testing.T, db *sql.DB) {
 	now := time.Now().Unix()
 
 	result, err := db.Exec(`
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, "inbox-cascade@example.test", "inbox-cascade", "token-inbox-cascade", now+3600)
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, "inbox-cascade@example.test", "inbox-cascade", "token-inbox-cascade", "hash-inbox-cascade", now+3600)
 	if err != nil {
 		t.Fatalf("insert inbox for inbox cascade test error = %v", err)
 	}

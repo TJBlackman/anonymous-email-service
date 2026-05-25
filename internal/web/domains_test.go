@@ -9,47 +9,44 @@ import (
 	"time"
 
 	"anonymous-email-service/internal/models"
+	"golang.org/x/crypto/bcrypt"
 )
 
-func TestNewInboxUsesSelectedDomain(t *testing.T) {
+func registerOptions() Options {
+	return Options{
+		DefaultDomain: "example.test",
+		SessionTTL:    7 * 24 * time.Hour,
+		BcryptCost:    bcrypt.MinCost,
+	}
+}
+
+func TestRegisterUsesSelectedDomain(t *testing.T) {
 	repo := newMemoryRepository()
 	if _, err := repo.CreateDomain(context.Background(), "second.test"); err != nil {
 		t.Fatalf("CreateDomain() error = %v", err)
 	}
-	handler := newTestHandler(t, repo)
+	handler := newTestHandlerWithOptions(t, repo, registerOptions())
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", strings.NewReader("domain=second.test"))
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=second.test"))
 	req.Header.Set("Origin", "http://service.test")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-
-	// SessionMiddleware auto-creates an inbox (default domain) before
-	// HandleNewInbox runs, so the response carries two inbox_token cookies. The
-	// last one is the freshly rotated inbox created with the selected domain.
-	var token string
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == "inbox_token" {
-			token = c.Value
+	if len(repo.inboxes) != 1 {
+		t.Fatalf("inboxes = %d, want 1", len(repo.inboxes))
+	}
+	for _, inbox := range repo.inboxes {
+		if !strings.HasSuffix(inbox.Address, "@second.test") {
+			t.Fatalf("address = %q, want @second.test suffix", inbox.Address)
 		}
-	}
-	if token == "" {
-		t.Fatal("expected inbox cookie")
-	}
-	inbox, err := repo.GetInboxByToken(context.Background(), token)
-	if err != nil {
-		t.Fatalf("GetInboxByToken() error = %v", err)
-	}
-	if !strings.HasSuffix(inbox.Address, "@second.test") {
-		t.Fatalf("address = %q, want @second.test suffix", inbox.Address)
 	}
 }
 
-func TestNewInboxRejectsDisabledDomain(t *testing.T) {
+func TestRegisterFallsBackWhenDomainDisabled(t *testing.T) {
 	repo := newMemoryRepository()
 	if _, err := repo.CreateDomain(context.Background(), "second.test"); err != nil {
 		t.Fatalf("CreateDomain() error = %v", err)
@@ -57,27 +54,34 @@ func TestNewInboxRejectsDisabledDomain(t *testing.T) {
 	if err := repo.SetDomainEnabled(context.Background(), "second.test", false); err != nil {
 		t.Fatalf("SetDomainEnabled() error = %v", err)
 	}
-	handler := newTestHandler(t, repo)
+	handler := newTestHandlerWithOptions(t, repo, registerOptions())
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/inbox/new", strings.NewReader("domain=second.test"))
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=second.test"))
 	req.Header.Set("Origin", "http://service.test")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d for disabled domain", rec.Code, http.StatusBadRequest)
+	// A stale/disabled domain selection falls back to the default enabled domain
+	// rather than failing the registration.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	for _, inbox := range repo.inboxes {
+		if !strings.HasSuffix(inbox.Address, "@example.test") {
+			t.Fatalf("address = %q, want fallback @example.test suffix", inbox.Address)
+		}
 	}
 }
 
-func TestIndexRendersDomainDropdown(t *testing.T) {
+func TestRegisterFormRendersDomainDropdown(t *testing.T) {
 	repo := newMemoryRepository()
 	if _, err := repo.CreateDomain(context.Background(), "second.test"); err != nil {
 		t.Fatalf("CreateDomain() error = %v", err)
 	}
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/register", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -92,7 +96,7 @@ func TestIndexRendersDomainDropdown(t *testing.T) {
 	}
 }
 
-func TestInboxCreationFailsWithNoDomains(t *testing.T) {
+func TestRegisterFailsWithNoDomains(t *testing.T) {
 	repo := &memoryRepository{
 		nextInboxID:    1,
 		nextDomainID:   1,
@@ -101,11 +105,14 @@ func TestInboxCreationFailsWithNoDomains(t *testing.T) {
 		inboxAddresses: map[string]int64{},
 		emails:         map[int64]*models.Email{},
 		attachments:    map[int64]*models.Attachment{},
+		sessions:       map[string]*models.Session{},
 	}
 	// No seeded domain and no DefaultDomain option.
-	handler := newTestHandlerWithOptions(t, repo, Options{InboxTTL: 24 * time.Hour})
+	handler := newTestHandlerWithOptions(t, repo, Options{SessionTTL: 7 * 24 * time.Hour, BcryptCost: bcrypt.MinCost})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain="))
+	req.Header.Set("Origin", "http://service.test")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

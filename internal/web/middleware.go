@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"anonymous-email-service/internal/clientip"
 	"anonymous-email-service/internal/models"
 	"anonymous-email-service/internal/repository"
 	"github.com/google/uuid"
@@ -32,34 +31,56 @@ func (e *rateLimitError) Error() string {
 // domain to assign an address to (empty domains table and no bootstrap seed).
 var errNoDomainAvailable = errors.New("no domain available for inbox creation")
 
-func SessionMiddleware(app *app) func(http.Handler) http.Handler {
+// MailboxAuthMiddleware gates the /app subtree. It resolves the logged-in inbox
+// from the session cookie, slides the session expiry (and cookie) forward on
+// every authenticated request, and injects the inbox into the request context.
+// Unauthenticated requests get a 401 JSON body for /app/api/* and a redirect to
+// /login for HTML routes.
+func MailboxAuthMiddleware(app *app) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			inbox, created, err := app.resolveInbox(r)
-			if err != nil {
-				var limitErr *rateLimitError
-				if errors.As(err, &limitErr) {
-					writeRateLimitResponse(w, limitErr.RetryAfter)
-					return
-				}
-				if errors.Is(err, errNoDomainAvailable) {
-					app.logError("resolve inbox failed: no domain configured", err)
-					http.Error(w, "no domains are configured; an administrator must add one at /admin", http.StatusServiceUnavailable)
-					return
-				}
-				app.logError("resolve inbox failed", err)
-				http.Error(w, "failed to initialize inbox", http.StatusInternalServerError)
+			cookie, err := r.Cookie(app.sessionCookieName)
+			if err != nil || cookie.Value == "" {
+				app.requireMailboxAuth(w, r)
 				return
 			}
 
-			if created {
-				app.setInboxCookie(w, inbox.Token)
+			session, inbox, err := app.repo.GetSession(r.Context(), cookie.Value)
+			if err != nil {
+				if !errors.Is(err, repository.ErrNotFound) {
+					app.logError("get session failed", err)
+				}
+				app.clearSessionCookie(w)
+				app.requireMailboxAuth(w, r)
+				return
+			}
+
+			// Slide the session forward on every authenticated request.
+			newExpiry := time.Now().UTC().Add(app.options.SessionTTL)
+			if err := app.repo.TouchSession(r.Context(), session.Token, newExpiry); err != nil && !errors.Is(err, repository.ErrNotFound) {
+				app.logError("touch session failed", err)
+			}
+			app.setSessionCookie(w, session.Token)
+			if err := app.repo.UpdateLastAccessed(r.Context(), inbox.ID); err != nil && !errors.Is(err, repository.ErrNotFound) {
+				app.logError("update last accessed failed", err)
 			}
 
 			ctx := withInbox(r.Context(), inbox)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// requireMailboxAuth writes the unauthenticated response: 401 JSON for API
+// routes under /app/api/, otherwise a redirect to the login page.
+func (a *app) requireMailboxAuth(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/app/api/") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"authentication required"}`))
+		return
+	}
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
 func GetInboxFromContext(ctx context.Context) *models.Inbox {
@@ -71,32 +92,12 @@ func withInbox(ctx context.Context, inbox *models.Inbox) context.Context {
 	return context.WithValue(ctx, inboxContextKey, inbox)
 }
 
-func (a *app) resolveInbox(r *http.Request) (*models.Inbox, bool, error) {
-	cookie, err := r.Cookie(a.cookieName)
-	if err == nil && cookie.Value != "" {
-		inbox, lookupErr := a.repo.GetInboxByToken(r.Context(), cookie.Value)
-		if lookupErr == nil {
-			if err := a.repo.UpdateLastAccessed(r.Context(), inbox.ID); err != nil && !errors.Is(err, repository.ErrNotFound) {
-				return nil, false, err
-			}
-			return inbox, false, nil
-		}
-		if !errors.Is(lookupErr, repository.ErrNotFound) {
-			return nil, false, lookupErr
-		}
-	}
-
-	inbox, err := a.createInbox(r.Context(), clientip.FromHTTPRequest(r), "")
-	if err != nil {
-		return nil, false, err
-	}
-	return inbox, true, nil
-}
-
-// createInbox creates a new inbox on the chosen domain. An empty domain (or one
-// that is not currently enabled) falls back to the default enabled domain.
-// Returns errNoDomainAvailable when no enabled domain exists.
-func (a *app) createInbox(ctx context.Context, clientAddr, domain string) (*models.Inbox, error) {
+// createInbox provisions a new mailbox account on the chosen domain with the
+// given bcrypt password hash. An empty domain (or one that is not currently
+// enabled) falls back to the default enabled domain. Registered mailboxes are
+// accounts, so they are created with the never-expires sentinel. Returns
+// errNoDomainAvailable when no enabled domain exists.
+func (a *app) createInbox(ctx context.Context, clientAddr, domain, passwordHash string) (*models.Inbox, error) {
 	if limiter := a.options.CreateInboxLimiter; limiter != nil {
 		decision := limiter.Allow(clientAddr)
 		if !decision.Allowed {
@@ -115,10 +116,11 @@ func (a *app) createInbox(ctx context.Context, clientAddr, domain string) (*mode
 	for range 5 {
 		localPart := generateLocalPart()
 		inbox := &models.Inbox{
-			Address:   fmt.Sprintf("%s@%s", localPart, effectiveDomain),
-			LocalPart: localPart,
-			Token:     uuid.NewString(),
-			ExpiresAt: a.options.inboxExpiry(time.Now()),
+			Address:      fmt.Sprintf("%s@%s", localPart, effectiveDomain),
+			LocalPart:    localPart,
+			Token:        uuid.NewString(),
+			PasswordHash: passwordHash,
+			ExpiresAt:    neverExpires,
 		}
 
 		err := a.repo.CreateInbox(ctx, inbox)
@@ -154,11 +156,38 @@ func generateLocalPart() string {
 	return strings.ReplaceAll(strings.ToLower(uuid.NewString()), "-", "")[:12]
 }
 
-func cookieName(secure bool) string {
+// sessionCookieName is the mailbox session cookie name. The __Host- prefix is
+// used when cookies are marked Secure, which the browser enforces requires
+// Secure + Path=/ + no Domain attribute.
+func sessionCookieName(secure bool) string {
 	if secure {
-		return "__Host-inbox_token"
+		return "__Host-session"
 	}
-	return "inbox_token"
+	return "session"
+}
+
+func (a *app) setSessionCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     a.sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   a.options.CookieSecure,
+		MaxAge:   int(a.options.SessionTTL.Seconds()),
+	})
+}
+
+func (a *app) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     a.sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   a.options.CookieSecure,
+		MaxAge:   -1,
+	})
 }
 
 func writeRateLimitResponse(w http.ResponseWriter, retryAfter time.Duration) {

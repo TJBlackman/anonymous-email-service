@@ -59,7 +59,7 @@ func (w *CleanupWorker) Stop() {
 }
 
 func (w *CleanupWorker) runCleanup(ctx context.Context) {
-	deleted, err := w.repo.DeleteExpiredInboxes(ctx)
+	deletedInboxes, err := w.repo.DeleteExpiredInboxes(ctx)
 	if err != nil {
 		if w.logger != nil {
 			w.logger.Error("cleanup failed", "error", err)
@@ -67,7 +67,15 @@ func (w *CleanupWorker) runCleanup(ctx context.Context) {
 		return
 	}
 
-	if deleted > 0 && w.logger != nil {
-		w.logger.Info("cleanup complete", "deleted_inboxes", deleted)
+	deletedSessions, err := w.repo.DeleteExpiredSessions(ctx)
+	if err != nil {
+		if w.logger != nil {
+			w.logger.Error("session cleanup failed", "error", err)
+		}
+		return
+	}
+
+	if (deletedInboxes > 0 || deletedSessions > 0) && w.logger != nil {
+		w.logger.Info("cleanup complete", "deleted_inboxes", deletedInboxes, "deleted_sessions", deletedSessions)
 	}
 }

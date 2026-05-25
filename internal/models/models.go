@@ -7,9 +7,19 @@ type Inbox struct {
 	Address        string
 	LocalPart      string
 	Token          string
+	PasswordHash   string
 	CreatedAt      time.Time
 	LastAccessedAt time.Time
 	ExpiresAt      time.Time
+}
+
+// Session ties a session cookie token to a logged-in inbox/account. ExpiresAt
+// slides forward on every authenticated request (see TouchSession).
+type Session struct {
+	Token     string
+	InboxID   int64
+	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 type Email struct {

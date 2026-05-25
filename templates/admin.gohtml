@@ -2,7 +2,9 @@
 <section class="panel">
     <div class="section-heading">
         <h2>Domains</h2>
-        <a href="/">Back to inbox</a>
+        <form method="post" action="/admin/logout">
+            <button type="submit">Log out</button>
+        </form>
     </div>
 
     {{if .Error}}

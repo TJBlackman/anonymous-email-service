@@ -398,5 +398,12 @@ func (s *stubRepository) IsDomainEnabled(_ context.Context, name string) (bool, 
 	}
 	return name == "example.test", nil
 }
-func (s *stubRepository) Ping(context.Context) error { return nil }
-func (s *stubRepository) Close() error               { return nil }
+func (s *stubRepository) CreateSession(context.Context, *models.Session) error { return nil }
+func (s *stubRepository) GetSession(context.Context, string) (*models.Session, *models.Inbox, error) {
+	return nil, nil, nil
+}
+func (s *stubRepository) DeleteSession(context.Context, string) error            { return nil }
+func (s *stubRepository) TouchSession(context.Context, string, time.Time) error  { return nil }
+func (s *stubRepository) DeleteExpiredSessions(context.Context) (int64, error)   { return 0, nil }
+func (s *stubRepository) Ping(context.Context) error                             { return nil }
+func (s *stubRepository) Close() error                                           { return nil }

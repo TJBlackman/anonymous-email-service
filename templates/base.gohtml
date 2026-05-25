@@ -14,12 +14,20 @@
                 <p class="eyebrow">Anonymous Email Service</p>
                 <h1>{{.Title}}</h1>
             </div>
-            {{if .Inbox}}
-            <div class="hero-meta">
-                <p class="meta-label">Inbox</p>
-                <p class="meta-value">{{.Inbox.Address}}</p>
-            </div>
-            {{end}}
+            <nav class="auth-nav">
+                {{if .Inbox}}
+                <div class="hero-meta">
+                    <p class="meta-label">Inbox</p>
+                    <p class="meta-value">{{.Inbox.Address}}</p>
+                </div>
+                <form method="post" action="/logout">
+                    <button type="submit">Log out</button>
+                </form>
+                {{else}}
+                <a href="/login">Log in</a>
+                <a href="/register">Create address</a>
+                {{end}}
+            </nav>
         </header>
         {{template "content" .}}
     </main>

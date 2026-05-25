@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"anonymous-email-service/internal/domainutil"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Config struct {
@@ -24,6 +25,10 @@ type Config struct {
 	MaxAttachmentSize         int64
 	CleanupInterval           time.Duration
 	CookieSecure              bool
+	SessionTTL                time.Duration
+	BcryptCost                int
+	AdminUsername             string
+	AdminPassword             string
 	InboxCreateLimitPerHour   int
 	SMTPConnectionLimitPerMin int
 	LogLevel                  string
@@ -39,6 +44,8 @@ const (
 	defaultMaxAttachSizeMB           = 5
 	defaultCleanupMins               = 15
 	defaultCookieSecure              = false
+	defaultSessionTTLDays            = 7
+	defaultBcryptCost                = bcrypt.DefaultCost
 	defaultInboxCreateLimitPerHour   = 2
 	defaultSMTPConnectionLimitPerMin = 30
 	defaultLogLevel                  = "info"
@@ -61,6 +68,10 @@ func Load() (*Config, error) {
 	maxAttachmentSizeMB, maxAttachmentSizeErr := loadPositiveInt("MAX_ATTACHMENT_MB", defaultMaxAttachSizeMB)
 	cleanupIntervalMins, cleanupIntervalErr := loadPositiveInt("CLEANUP_INTERVAL_MIN", defaultCleanupMins)
 	cookieSecure, cookieSecureErr := loadBool("COOKIE_SECURE", defaultCookieSecure)
+	sessionTTLDays, sessionTTLErr := loadPositiveInt("SESSION_TTL_DAYS", defaultSessionTTLDays)
+	bcryptCost, bcryptCostErr := loadBcryptCost()
+	adminUsername, _ := loadTrimmedString("ADMIN_USERNAME", "", false)
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
 	inboxCreateLimitPerHour, inboxCreateLimitErr := loadNonNegativeInt("INBOX_CREATE_LIMIT_PER_HOUR", defaultInboxCreateLimitPerHour)
 	smtpConnectionLimitPerMin, smtpConnectionLimitErr := loadPositiveInt("SMTP_CONNECTION_LIMIT_PER_MIN", defaultSMTPConnectionLimitPerMin)
 	logLevel, logLevelErr := loadLogLevel()
@@ -75,6 +86,8 @@ func Load() (*Config, error) {
 		maxAttachmentSizeErr,
 		cleanupIntervalErr,
 		cookieSecureErr,
+		sessionTTLErr,
+		bcryptCostErr,
 		inboxCreateLimitErr,
 		smtpConnectionLimitErr,
 		logLevelErr,
@@ -99,6 +112,10 @@ func Load() (*Config, error) {
 		MaxAttachmentSize:         int64(maxAttachmentSizeMB) * 1024 * 1024,
 		CleanupInterval:           time.Duration(cleanupIntervalMins) * time.Minute,
 		CookieSecure:              cookieSecure,
+		SessionTTL:                time.Duration(sessionTTLDays) * 24 * time.Hour,
+		BcryptCost:                bcryptCost,
+		AdminUsername:             adminUsername,
+		AdminPassword:             adminPassword,
 		InboxCreateLimitPerHour:   inboxCreateLimitPerHour,
 		SMTPConnectionLimitPerMin: smtpConnectionLimitPerMin,
 		LogLevel:                  logLevel,
@@ -172,6 +189,22 @@ func loadLogLevel() (string, error) {
 		return "", fmt.Errorf("LOG_LEVEL must be one of: debug, info, warn, error")
 	}
 	return value, nil
+}
+
+// loadBcryptCost reads BCRYPT_COST, defaulting to bcrypt.DefaultCost. The value
+// must fall within bcrypt's supported cost range.
+func loadBcryptCost() (int, error) {
+	value, usedDefault := loadTrimmedString("BCRYPT_COST", strconv.Itoa(defaultBcryptCost), true)
+	if !usedDefault && value == "" {
+		return 0, fmt.Errorf("BCRYPT_COST must be an integer between %d and %d", bcrypt.MinCost, bcrypt.MaxCost)
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < bcrypt.MinCost || parsed > bcrypt.MaxCost {
+		return 0, fmt.Errorf("BCRYPT_COST must be an integer between %d and %d", bcrypt.MinCost, bcrypt.MaxCost)
+	}
+
+	return parsed, nil
 }
 
 func loadPositiveInt(key string, fallback int) (int, error) {

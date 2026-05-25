@@ -61,6 +61,10 @@ func TestSQLiteInboxLifecycleAndExpiry(t *testing.T) {
 		t.Fatalf("LastAccessedAt = %v, want after %v", updated.LastAccessedAt, before)
 	}
 
+	// An inbox with a past expiry is still returned by GetInboxByAddress: address
+	// lookup is for login and does not filter on expiry (registered mailboxes are
+	// accounts and use the never-expires sentinel). The cleanup worker is what
+	// removes any inbox whose expiry has passed.
 	expired := &models.Inbox{
 		Address:   "expired@test.example",
 		LocalPart: "expired",
@@ -71,9 +75,8 @@ func TestSQLiteInboxLifecycleAndExpiry(t *testing.T) {
 		t.Fatalf("CreateInbox(expired) error = %v", err)
 	}
 
-	_, err = repo.GetInboxByAddress(ctx, expired.Address)
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetInboxByAddress(expired) error = %v, want ErrNotFound", err)
+	if _, err = repo.GetInboxByAddress(ctx, expired.Address); err != nil {
+		t.Fatalf("GetInboxByAddress(expired) error = %v, want it to be found", err)
 	}
 
 	deleted, err := repo.DeleteExpiredInboxes(ctx)

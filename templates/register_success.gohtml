@@ -1,0 +1,18 @@
+{{define "content"}}
+<section class="panel">
+    <h2>Save your password now</h2>
+    <p class="empty-state" role="alert"><strong>This password will never be shown
+    again.</strong> Copy it somewhere safe before you continue. If you lose it,
+    you will not be able to access this inbox.</p>
+
+    <p class="section-label">Email address</p>
+    <p class="address">{{.Address}}</p>
+
+    <p class="section-label">Password</p>
+    <p class="address"><code>{{.Password}}</code></p>
+
+    <div class="summary-actions">
+        <a href="/login"><button type="button">Go to login</button></a>
+    </div>
+</section>
+{{end}}

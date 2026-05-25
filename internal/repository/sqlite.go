@@ -51,7 +51,7 @@ func (s *SQLite) init(ctx context.Context) error {
 		return fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
 
-	for _, name := range []string{"001_initial.sql", "002_domains.sql"} {
+	for _, name := range []string{"001_initial.sql", "002_domains.sql", "003_sessions.sql"} {
 		migration, err := loadMigration(name)
 		if err != nil {
 			return err
@@ -86,9 +86,9 @@ func loadMigration(name string) (string, error) {
 
 func (s *SQLite) CreateInbox(ctx context.Context, inbox *models.Inbox) error {
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO inboxes (address, local_part, token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, inbox.Address, inbox.LocalPart, inbox.Token, toUnix(inbox.ExpiresAt))
+		INSERT INTO inboxes (address, local_part, token, password_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, inbox.Address, inbox.LocalPart, inbox.Token, inbox.PasswordHash, toUnix(inbox.ExpiresAt))
 	if err != nil {
 		return mapSQLError("create inbox", err)
 	}
@@ -117,19 +117,21 @@ func (s *SQLite) CreateInbox(ctx context.Context, inbox *models.Inbox) error {
 
 func (s *SQLite) GetInboxByToken(ctx context.Context, token string) (*models.Inbox, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, address, local_part, token, created_at, last_accessed_at, expires_at
+		SELECT id, address, local_part, token, password_hash, created_at, last_accessed_at, expires_at
 		FROM inboxes
 		WHERE token = ? AND expires_at > ?
 	`, token, nowUnix())
 	return scanInbox(row, "get inbox by token")
 }
 
+// GetInboxByAddress looks up an account by its email address for login. It does
+// not filter on expires_at: registered mailboxes are accounts and never expire.
 func (s *SQLite) GetInboxByAddress(ctx context.Context, address string) (*models.Inbox, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, address, local_part, token, created_at, last_accessed_at, expires_at
+		SELECT id, address, local_part, token, password_hash, created_at, last_accessed_at, expires_at
 		FROM inboxes
-		WHERE address = ? COLLATE NOCASE AND expires_at > ?
-	`, address, nowUnix())
+		WHERE address = ? COLLATE NOCASE
+	`, address)
 	return scanInbox(row, "get inbox by address")
 }
 
@@ -425,6 +427,113 @@ func (s *SQLite) IsDomainEnabled(ctx context.Context, name string) (bool, error)
 	return true, nil
 }
 
+func (s *SQLite) CreateSession(ctx context.Context, session *models.Session) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO sessions (token, inbox_id, expires_at)
+		VALUES (?, ?, ?)
+	`, session.Token, session.InboxID, toUnix(session.ExpiresAt)); err != nil {
+		return mapSQLError("create session", err)
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT created_at
+		FROM sessions
+		WHERE token = ?
+	`, session.Token)
+	var createdAt int64
+	if err := row.Scan(&createdAt); err != nil {
+		return mapScanError("create session", err)
+	}
+
+	session.CreatedAt = fromUnix(createdAt)
+	session.ExpiresAt = session.ExpiresAt.UTC()
+	return nil
+}
+
+// GetSession returns the session and its owning inbox when the token is valid
+// and unexpired. Returns ErrNotFound for a missing or expired session.
+func (s *SQLite) GetSession(ctx context.Context, token string) (*models.Session, *models.Inbox, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT s.token, s.inbox_id, s.created_at, s.expires_at,
+		       i.id, i.address, i.local_part, i.token, i.password_hash,
+		       i.created_at, i.last_accessed_at, i.expires_at
+		FROM sessions s
+		JOIN inboxes i ON i.id = s.inbox_id
+		WHERE s.token = ? AND s.expires_at > ?
+	`, token, nowUnix())
+
+	session := &models.Session{}
+	inbox := &models.Inbox{}
+	var sCreated, sExpires int64
+	var iCreated, iAccessed, iExpires int64
+	err := row.Scan(
+		&session.Token,
+		&session.InboxID,
+		&sCreated,
+		&sExpires,
+		&inbox.ID,
+		&inbox.Address,
+		&inbox.LocalPart,
+		&inbox.Token,
+		&inbox.PasswordHash,
+		&iCreated,
+		&iAccessed,
+		&iExpires,
+	)
+	if err != nil {
+		return nil, nil, mapScanError("get session", err)
+	}
+
+	session.CreatedAt = fromUnix(sCreated)
+	session.ExpiresAt = fromUnix(sExpires)
+	inbox.CreatedAt = fromUnix(iCreated)
+	inbox.LastAccessedAt = fromUnix(iAccessed)
+	inbox.ExpiresAt = fromUnix(iExpires)
+	return session, inbox, nil
+}
+
+func (s *SQLite) DeleteSession(ctx context.Context, token string) error {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM sessions
+		WHERE token = ?
+	`, token)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+
+	return requireRowsAffected("delete session", result)
+}
+
+func (s *SQLite) TouchSession(ctx context.Context, token string, expiresAt time.Time) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET expires_at = ?
+		WHERE token = ?
+	`, toUnix(expiresAt), token)
+	if err != nil {
+		return fmt.Errorf("touch session: %w", err)
+	}
+
+	return requireRowsAffected("touch session", result)
+}
+
+func (s *SQLite) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM sessions
+		WHERE expires_at <= ?
+	`, nowUnix())
+	if err != nil {
+		return 0, fmt.Errorf("delete expired sessions: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete expired sessions: read affected rows: %w", err)
+	}
+
+	return rows, nil
+}
+
 func (s *SQLite) Close() error {
 	if s.db == nil {
 		return nil
@@ -511,6 +620,7 @@ func scanInbox(row scanner, op string) (*models.Inbox, error) {
 		&inbox.Address,
 		&inbox.LocalPart,
 		&inbox.Token,
+		&inbox.PasswordHash,
 		&createdAt,
 		&lastAccessedAt,
 		&expiresAt,

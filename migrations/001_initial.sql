@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS inboxes (
     address TEXT UNIQUE NOT NULL COLLATE NOCASE,
     local_part TEXT NOT NULL COLLATE NOCASE,
     token TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     last_accessed_at INTEGER NOT NULL DEFAULT (unixepoch()),
     expires_at INTEGER NOT NULL
