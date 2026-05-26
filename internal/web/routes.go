@@ -19,7 +19,6 @@ type Options struct {
 	SessionTTL         time.Duration
 	BcryptCost         int
 	AdminUsername      string
-	AdminPasswordHash  string
 	CreateInboxLimiter *ratelimit.FixedWindowLimiter
 }
 
@@ -38,6 +37,7 @@ type templateSet struct {
 	register        *template.Template
 	registerSuccess *template.Template
 	adminLogin      *template.Template
+	adminSetup      *template.Template
 }
 
 type app struct {
@@ -97,6 +97,8 @@ func RegisterRoutes(repo repository.Repository, logger *slog.Logger, templateDir
 	adminMux.HandleFunc("GET /admin", app.HandleAdminIndex)
 	adminMux.HandleFunc("POST /admin/domains", app.HandleAdminAddDomain)
 	adminMux.HandleFunc("POST /admin/domains/{name}/toggle", app.HandleAdminToggleDomain)
+	root.HandleFunc("GET /admin/setup", app.HandleAdminSetupForm)
+	root.HandleFunc("POST /admin/setup", app.HandleAdminSetup)
 	root.HandleFunc("GET /admin/login", app.HandleAdminLoginForm)
 	root.HandleFunc("POST /admin/login", app.HandleAdminLogin)
 	root.HandleFunc("POST /admin/logout", app.HandleAdminLogout)
@@ -168,6 +170,10 @@ func parseTemplates(templateDir string) (templateSet, error) {
 	if err != nil {
 		return templateSet{}, err
 	}
+	adminSetupTmpl, err := page("admin_setup.gohtml")
+	if err != nil {
+		return templateSet{}, err
+	}
 
 	return templateSet{
 		index:           indexTmpl,
@@ -178,5 +184,6 @@ func parseTemplates(templateDir string) (templateSet, error) {
 		register:        registerTmpl,
 		registerSuccess: registerSuccessTmpl,
 		adminLogin:      adminLoginTmpl,
+		adminSetup:      adminSetupTmpl,
 	}, nil
 }

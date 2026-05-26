@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"anonymous-email-service/internal/models"
+	"anonymous-email-service/internal/repository"
 )
 
 func TestCleanupWorkerRunsImmediatelyAndRepeats(t *testing.T) {
@@ -145,5 +146,9 @@ func (s *stubRepository) TouchSession(context.Context, string, time.Time) error 
 	return nil
 }
 func (s *stubRepository) DeleteExpiredSessions(context.Context) (int64, error) { return 0, nil }
-func (s *stubRepository) Ping(context.Context) error                          { return nil }
-func (s *stubRepository) Close() error                                        { return nil }
+func (s *stubRepository) GetSetting(context.Context, string) (string, error) {
+	return "", repository.ErrNotFound
+}
+func (s *stubRepository) SetSetting(context.Context, string, string) error { return nil }
+func (s *stubRepository) Ping(context.Context) error                       { return nil }
+func (s *stubRepository) Close() error                                     { return nil }

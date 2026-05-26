@@ -1,8 +1,10 @@
 package web
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -17,6 +19,16 @@ import (
 // in-memory only (a single operator credential), so they also reset on restart.
 const adminSessionTTL = time.Hour
 
+// AdminPasswordHashKey is the settings-table key under which the bcrypt hash of
+// the admin password is stored. The password is never read from the environment;
+// it is chosen once via the first-run /admin/setup flow.
+const AdminPasswordHashKey = "admin_password_hash"
+
+// minAdminPasswordLength is the floor for an operator-chosen admin password.
+// Admin login is unthrottled, so the password must be long enough to resist
+// online guessing.
+const minAdminPasswordLength = 12
+
 type adminData struct {
 	commonData
 	Domains []*models.Domain
@@ -24,6 +36,11 @@ type adminData struct {
 }
 
 type adminLoginData struct {
+	commonData
+	Error string
+}
+
+type adminSetupData struct {
 	commonData
 	Error string
 }
@@ -78,10 +95,27 @@ func adminCookieName(secure bool) string {
 	return "admin_session"
 }
 
-// adminEnabled reports whether admin credentials were configured. When they are
-// not, the entire /admin area is disabled rather than left open.
+// adminEnabled reports whether the admin area is reachable at all. It is gated
+// solely on ADMIN_USERNAME: the password is not provisioned via the environment
+// but chosen on first run, so a missing password means "needs setup", not
+// "disabled". When ADMIN_USERNAME is unset the entire /admin area returns 503.
 func (a *app) adminEnabled() bool {
-	return a.options.AdminUsername != "" && a.options.AdminPasswordHash != ""
+	return a.options.AdminUsername != ""
+}
+
+// adminPasswordHash returns the stored bcrypt hash of the admin password, or ""
+// when none has been set yet (the first-run setup case). A genuine lookup error
+// is returned and surfaced as a 500 by callers rather than silently treated as
+// "not set".
+func (a *app) adminPasswordHash(ctx context.Context) (string, error) {
+	hash, err := a.repo.GetSetting(ctx, AdminPasswordHashKey)
+	if errors.Is(err, repository.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return hash, nil
 }
 
 func (a *app) setAdminCookie(w http.ResponseWriter, token string) {
@@ -108,13 +142,24 @@ func (a *app) clearAdminCookie(w http.ResponseWriter) {
 	})
 }
 
-// adminAuthMiddleware guards the /admin management routes. With no configured
-// credentials it returns 503; otherwise it requires a valid admin session cookie
-// and redirects to /admin/login when absent.
+// adminAuthMiddleware guards the /admin management routes. With ADMIN_USERNAME
+// unset it returns 503. When no admin password has been set yet it sends the
+// visitor to the one-time /admin/setup flow. Otherwise it requires a valid admin
+// session cookie and redirects to /admin/login when absent.
 func (a *app) adminAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !a.adminEnabled() {
 			http.Error(w, "admin area is not configured", http.StatusServiceUnavailable)
+			return
+		}
+		hash, err := a.adminPasswordHash(r.Context())
+		if err != nil {
+			a.logError("read admin password failed", err)
+			http.Error(w, "failed to load admin", http.StatusInternalServerError)
+			return
+		}
+		if hash == "" {
+			http.Redirect(w, r, "/admin/setup", http.StatusSeeOther)
 			return
 		}
 		cookie, err := r.Cookie(a.adminCookieName)
@@ -131,12 +176,32 @@ func (a *app) HandleAdminLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "admin area is not configured", http.StatusServiceUnavailable)
 		return
 	}
+	hash, err := a.adminPasswordHash(r.Context())
+	if err != nil {
+		a.logError("read admin password failed", err)
+		http.Error(w, "failed to load admin", http.StatusInternalServerError)
+		return
+	}
+	if hash == "" {
+		http.Redirect(w, r, "/admin/setup", http.StatusSeeOther)
+		return
+	}
 	a.renderAdminLogin(w, "", http.StatusOK)
 }
 
 func (a *app) HandleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	if !a.adminEnabled() {
 		http.Error(w, "admin area is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	hash, err := a.adminPasswordHash(r.Context())
+	if err != nil {
+		a.logError("read admin password failed", err)
+		http.Error(w, "failed to load admin", http.StatusInternalServerError)
+		return
+	}
+	if hash == "" {
+		http.Redirect(w, r, "/admin/setup", http.StatusSeeOther)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -148,16 +213,94 @@ func (a *app) HandleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.PostFormValue("password")
 
 	usernameOK := subtle.ConstantTimeCompare([]byte(username), []byte(a.options.AdminUsername)) == 1
-	passwordOK := auth.VerifyPassword(a.options.AdminPasswordHash, password)
+	passwordOK := auth.VerifyPassword(hash, password)
 	if !usernameOK || !passwordOK {
 		a.renderAdminLogin(w, "Invalid username or password.", http.StatusUnauthorized)
 		return
 	}
 
+	a.startAdminSession(w)
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// HandleAdminSetupForm renders the first-run password setup page. It is only
+// reachable while no admin password is set; once one exists it redirects to the
+// normal login.
+func (a *app) HandleAdminSetupForm(w http.ResponseWriter, r *http.Request) {
+	if !a.adminEnabled() {
+		http.Error(w, "admin area is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	hash, err := a.adminPasswordHash(r.Context())
+	if err != nil {
+		a.logError("read admin password failed", err)
+		http.Error(w, "failed to load admin", http.StatusInternalServerError)
+		return
+	}
+	if hash != "" {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+	a.renderAdminSetup(w, "", http.StatusOK)
+}
+
+// HandleAdminSetup persists the operator's chosen admin password on first run.
+// To avoid a race where a slow setup leaves the account claimable, it re-checks
+// inside the request that no password has been set; a second concurrent setup
+// gets bounced to login. On success it logs the new admin straight in.
+func (a *app) HandleAdminSetup(w http.ResponseWriter, r *http.Request) {
+	if !a.adminEnabled() {
+		http.Error(w, "admin area is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	existing, err := a.adminPasswordHash(r.Context())
+	if err != nil {
+		a.logError("read admin password failed", err)
+		http.Error(w, "failed to load admin", http.StatusInternalServerError)
+		return
+	}
+	if existing != "" {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAdminSetup(w, "Invalid form submission.", http.StatusBadRequest)
+		return
+	}
+
+	password := r.PostFormValue("password")
+	confirm := r.PostFormValue("confirm_password")
+	if len(password) < minAdminPasswordLength {
+		a.renderAdminSetup(w, fmt.Sprintf("Password must be at least %d characters.", minAdminPasswordLength), http.StatusBadRequest)
+		return
+	}
+	if password != confirm {
+		a.renderAdminSetup(w, "Passwords do not match.", http.StatusBadRequest)
+		return
+	}
+
+	hash, err := auth.HashPassword(password, a.options.BcryptCost)
+	if err != nil {
+		a.logError("hash admin password failed", err)
+		a.renderAdminSetup(w, "Something went wrong. Please try again.", http.StatusInternalServerError)
+		return
+	}
+	if err := a.repo.SetSetting(r.Context(), AdminPasswordHashKey, hash); err != nil {
+		a.logError("persist admin password failed", err)
+		a.renderAdminSetup(w, "Something went wrong. Please try again.", http.StatusInternalServerError)
+		return
+	}
+
+	a.startAdminSession(w)
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// startAdminSession mints an admin session token, registers it, and sets the
+// admin session cookie.
+func (a *app) startAdminSession(w http.ResponseWriter) {
 	token := auth.NewSessionToken()
 	a.adminSessions.create(token, time.Now().Add(adminSessionTTL))
 	a.setAdminCookie(w, token)
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (a *app) HandleAdminLogout(w http.ResponseWriter, r *http.Request) {
@@ -250,6 +393,18 @@ func (a *app) renderAdminLogin(w http.ResponseWriter, errMsg string, status int)
 		Error:      errMsg,
 	}); err != nil {
 		a.logError("render admin login failed", err)
+	}
+}
+
+func (a *app) renderAdminSetup(w http.ResponseWriter, errMsg string, status int) {
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+	}
+	if err := a.templates.adminSetup.ExecuteTemplate(w, "base", adminSetupData{
+		commonData: commonData{Title: "Set Admin Password"},
+		Error:      errMsg,
+	}); err != nil {
+		a.logError("render admin setup failed", err)
 	}
 }
 

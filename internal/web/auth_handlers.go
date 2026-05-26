@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -23,8 +24,9 @@ type loginData struct {
 
 type registerData struct {
 	commonData
-	Domains []*models.Domain
-	Error   string
+	Domains   []*models.Domain
+	LocalPart string
+	Error     string
 }
 
 type registerSuccessData struct {
@@ -107,31 +109,37 @@ func (a *app) HandleRegisterForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/app", http.StatusSeeOther)
 		return
 	}
-	a.renderRegister(w, r, "", http.StatusOK)
+	a.renderRegister(w, r, "", "", http.StatusOK)
 }
 
 func (a *app) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		a.renderRegister(w, r, "Invalid form submission.", http.StatusBadRequest)
+		a.renderRegister(w, r, "", "Invalid form submission.", http.StatusBadRequest)
 		return
 	}
 
 	domain := strings.ToLower(strings.TrimSpace(r.PostFormValue("domain")))
 
+	localPart, err := validateLocalPart(r.PostFormValue("local_part"))
+	if err != nil {
+		a.renderRegister(w, r, r.PostFormValue("local_part"), err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	password, err := auth.GeneratePassword()
 	if err != nil {
 		a.logError("generate password failed", err)
-		a.renderRegister(w, r, "Something went wrong. Please try again.", http.StatusInternalServerError)
+		a.renderRegister(w, r, localPart, "Something went wrong. Please try again.", http.StatusInternalServerError)
 		return
 	}
 	hash, err := auth.HashPassword(password, a.options.BcryptCost)
 	if err != nil {
 		a.logError("hash password failed", err)
-		a.renderRegister(w, r, "Something went wrong. Please try again.", http.StatusInternalServerError)
+		a.renderRegister(w, r, localPart, "Something went wrong. Please try again.", http.StatusInternalServerError)
 		return
 	}
 
-	inbox, err := a.createInbox(r.Context(), clientip.FromHTTPRequest(r), domain, hash)
+	inbox, err := a.createInbox(r.Context(), clientip.FromHTTPRequest(r), domain, localPart, hash)
 	if err != nil {
 		var limitErr *rateLimitError
 		if errors.As(err, &limitErr) {
@@ -139,11 +147,17 @@ func (a *app) HandleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, errNoDomainAvailable) {
-			a.renderRegister(w, r, "No domains are available right now. Please try again later.", http.StatusServiceUnavailable)
+			a.renderRegister(w, r, localPart, "No domains are available right now. Please try again later.", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, repository.ErrConflict) {
+			a.renderRegister(w, r, localPart,
+				fmt.Sprintf("%s@%s is already taken. Please choose another.", localPart, domain),
+				http.StatusConflict)
 			return
 		}
 		a.logError("create inbox failed", err)
-		a.renderRegister(w, r, "Something went wrong. Please try again.", http.StatusInternalServerError)
+		a.renderRegister(w, r, localPart, "Something went wrong. Please try again.", http.StatusInternalServerError)
 		return
 	}
 
@@ -200,7 +214,33 @@ func (a *app) renderLogin(w http.ResponseWriter, errMsg string, status int) {
 	}
 }
 
-func (a *app) renderRegister(w http.ResponseWriter, r *http.Request, errMsg string, status int) {
+// localPartMinLen and localPartMaxLen bound the user-chosen address name. The
+// max stays well under the 64-octet RFC 5321 local-part limit.
+const (
+	localPartMinLen = 3
+	localPartMaxLen = 64
+)
+
+// validateLocalPart normalizes and validates the user-chosen part before the
+// '@'. It lowercases the input and allows only ASCII letters and digits. On
+// failure it returns a user-facing message suitable for rendering in the form.
+func validateLocalPart(raw string) (string, error) {
+	local := strings.ToLower(strings.TrimSpace(raw))
+	if local == "" {
+		return "", fmt.Errorf("Please choose a name for your address.")
+	}
+	if len(local) < localPartMinLen || len(local) > localPartMaxLen {
+		return "", fmt.Errorf("Name must be %d–%d characters.", localPartMinLen, localPartMaxLen)
+	}
+	for _, c := range local {
+		if !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') {
+			return "", fmt.Errorf("Use letters and numbers only.")
+		}
+	}
+	return local, nil
+}
+
+func (a *app) renderRegister(w http.ResponseWriter, r *http.Request, localPart, errMsg string, status int) {
 	domains, err := a.repo.ListDomains(r.Context(), true)
 	if err != nil {
 		a.logError("list domains failed", err)
@@ -213,6 +253,7 @@ func (a *app) renderRegister(w http.ResponseWriter, r *http.Request, errMsg stri
 	if err := a.templates.register.ExecuteTemplate(w, "base", registerData{
 		commonData: commonData{Title: "Create an Email Address"},
 		Domains:    domains,
+		LocalPart:  localPart,
 		Error:      errMsg,
 	}); err != nil {
 		a.logError("render register failed", err)

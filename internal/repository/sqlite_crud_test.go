@@ -246,11 +246,43 @@ func TestSQLitePing(t *testing.T) {
 	}
 }
 
+func TestSQLiteSettingsGetSetUpsert(t *testing.T) {
+	repo := openTestSQLite(t)
+	ctx := context.Background()
+
+	if _, err := repo.GetSetting(ctx, "admin_password_hash"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetSetting() on unset key error = %v, want ErrNotFound", err)
+	}
+
+	if err := repo.SetSetting(ctx, "admin_password_hash", "hash-1"); err != nil {
+		t.Fatalf("SetSetting() error = %v", err)
+	}
+	got, err := repo.GetSetting(ctx, "admin_password_hash")
+	if err != nil {
+		t.Fatalf("GetSetting() error = %v", err)
+	}
+	if got != "hash-1" {
+		t.Fatalf("GetSetting() = %q, want %q", got, "hash-1")
+	}
+
+	// A second set on the same key upserts rather than failing the PRIMARY KEY.
+	if err := repo.SetSetting(ctx, "admin_password_hash", "hash-2"); err != nil {
+		t.Fatalf("SetSetting() upsert error = %v", err)
+	}
+	got, err = repo.GetSetting(ctx, "admin_password_hash")
+	if err != nil {
+		t.Fatalf("GetSetting() after upsert error = %v", err)
+	}
+	if got != "hash-2" {
+		t.Fatalf("GetSetting() after upsert = %q, want %q", got, "hash-2")
+	}
+}
+
 func openTestSQLite(t *testing.T) Repository {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "mail.db")
-	repo, err := NewSQLite(path)
+	repo, err := NewSQLite(path, "")
 	if err != nil {
 		t.Fatalf("NewSQLite() error = %v", err)
 	}

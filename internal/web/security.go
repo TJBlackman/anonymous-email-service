@@ -61,6 +61,22 @@ func (a *app) postSecurityMiddleware(next http.Handler) http.Handler {
 }
 
 func isSameOriginRequest(r *http.Request) bool {
+	// Sec-Fetch-Site (Fetch Metadata) is the authoritative signal: it is set by
+	// the browser and cannot be read or forged by cross-site JavaScript, so when
+	// present we trust it over Origin/Referer. This also handles the case where a
+	// genuine same-origin top-level form navigation arrives with an opaque
+	// "Origin: null" (e.g. a POST reached via a redirect), which the Origin check
+	// below would wrongly reject.
+	switch strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")) {
+	case "same-origin", "none":
+		// "none" is a user-initiated request (typed URL, bookmark): not cross-site.
+		return true
+	case "same-site", "cross-site":
+		return false
+	}
+
+	// Older clients and non-browser callers omit Fetch Metadata; fall back to the
+	// host+scheme comparison of Origin, then Referer.
 	if value := strings.TrimSpace(r.Header.Get("Origin")); value != "" {
 		return sameOriginURL(r, value)
 	}

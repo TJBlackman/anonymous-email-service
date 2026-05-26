@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -112,7 +114,7 @@ func TestRegisterCreatesAccountAndRevealsPasswordOnce(t *testing.T) {
 	repo := newMemoryRepository()
 	handler := newTestHandler(t, repo)
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=example.test"))
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("local_part=adam&domain=example.test"))
 	req.Header.Set("Origin", "http://service.test")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -127,6 +129,12 @@ func TestRegisterCreatesAccountAndRevealsPasswordOnce(t *testing.T) {
 	var created *models.Inbox
 	for _, inbox := range repo.inboxes {
 		created = inbox
+	}
+	if created.Address != "adam@example.test" {
+		t.Fatalf("Address = %q, want %q", created.Address, "adam@example.test")
+	}
+	if created.LocalPart != "adam" {
+		t.Fatalf("LocalPart = %q, want %q", created.LocalPart, "adam")
 	}
 	if created.PasswordHash == "" {
 		t.Fatal("created inbox has no password hash")
@@ -161,7 +169,7 @@ func TestRegisterRateLimited(t *testing.T) {
 	})
 
 	for i, want := range []int{http.StatusOK, http.StatusTooManyRequests} {
-		req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=example.test"))
+		req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader(fmt.Sprintf("local_part=adam%d&domain=example.test", i)))
 		req.Header.Set("Origin", "http://service.test")
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		rec := httptest.NewRecorder()
@@ -169,6 +177,94 @@ func TestRegisterRateLimited(t *testing.T) {
 		if rec.Code != want {
 			t.Fatalf("attempt %d status = %d, want %d", i+1, rec.Code, want)
 		}
+	}
+}
+
+func TestValidateLocalPart(t *testing.T) {
+	t.Run("valid normalizes and lowercases", func(t *testing.T) {
+		got, err := validateLocalPart("  Adam01  ")
+		if err != nil {
+			t.Fatalf("validateLocalPart() error = %v", err)
+		}
+		if got != "adam01" {
+			t.Fatalf("validateLocalPart() = %q, want %q", got, "adam01")
+		}
+	})
+
+	rejected := map[string]string{
+		"empty":          "",
+		"whitespaceOnly": "   ",
+		"tooShort":       "ab",
+		"tooLong":        strings.Repeat("a", localPartMaxLen+1),
+		"hasAt":          "adam@x",
+		"hasSpace":       "ad am",
+		"hasDot":         "adam.smith",
+		"hasHyphen":      "adam-smith",
+		"hasSymbol":      "adam!",
+	}
+	for name, input := range rejected {
+		t.Run(name, func(t *testing.T) {
+			if _, err := validateLocalPart(input); err == nil {
+				t.Fatalf("validateLocalPart(%q) = nil error, want rejection", input)
+			}
+		})
+	}
+}
+
+func TestRegisterRejectsTakenLocalPart(t *testing.T) {
+	repo := newMemoryRepository()
+	repo.seedInbox("adam@example.test", "adam", "token-adam", "hash", neverExpires)
+	handler := newTestHandler(t, repo)
+
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("local_part=Adam&domain=example.test"))
+	req.Header.Set("Origin", "http://service.test")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+	if len(repo.inboxes) != 1 {
+		t.Fatalf("inboxes = %d, want 1 (no new inbox created)", len(repo.inboxes))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "already taken") {
+		t.Fatalf("response body missing conflict message: %q", body)
+	}
+	// The submitted name repopulates the form (lowercased by validation).
+	if !strings.Contains(body, `value="adam"`) {
+		t.Fatalf("response body did not repopulate local_part: %q", body)
+	}
+}
+
+func TestRegisterRejectsInvalidLocalPart(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		localPart string
+	}{
+		{"empty", ""},
+		{"symbols", "bad+name"},
+		{"space", "bad name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMemoryRepository()
+			handler := newTestHandler(t, repo)
+
+			form := fmt.Sprintf("local_part=%s&domain=example.test", url.QueryEscape(tc.localPart))
+			req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader(form))
+			req.Header.Set("Origin", "http://service.test")
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			if len(repo.inboxes) != 0 {
+				t.Fatalf("inboxes = %d, want 0", len(repo.inboxes))
+			}
+		})
 	}
 }
 
@@ -527,6 +623,44 @@ func TestCrossOriginPostsAreRejected(t *testing.T) {
 	}
 }
 
+// TestSecFetchSiteGovernsOriginCheck verifies that the Fetch Metadata header is
+// the authoritative same-origin signal: a same-origin form navigation succeeds
+// even when the browser sends an opaque "Origin: null" (the reported /admin/setup
+// bug), while a cross-site Sec-Fetch-Site is rejected regardless of Origin.
+func TestSecFetchSiteGovernsOriginCheck(t *testing.T) {
+	tests := []struct {
+		name          string
+		origin        string
+		secFetchSite  string
+		wantForbidden bool
+	}{
+		{name: "same-origin with null origin", origin: "null", secFetchSite: "same-origin", wantForbidden: false},
+		{name: "none is user-initiated", origin: "null", secFetchSite: "none", wantForbidden: false},
+		{name: "cross-site rejected despite matching origin", origin: "http://service.test", secFetchSite: "cross-site", wantForbidden: true},
+		{name: "same-site rejected", origin: "null", secFetchSite: "same-site", wantForbidden: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMemoryRepository()
+			handler := newTestHandler(t, repo)
+
+			req := httptest.NewRequest(http.MethodPost, "http://service.test/login", strings.NewReader("address=user@example.test&password=whatever"))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Origin", tt.origin)
+			req.Header.Set("Sec-Fetch-Site", tt.secFetchSite)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			forbidden := rec.Code == http.StatusForbidden
+			if forbidden != tt.wantForbidden {
+				t.Fatalf("status = %d, wantForbidden = %v", rec.Code, tt.wantForbidden)
+			}
+		})
+	}
+}
+
 func TestPostRequestBodyLimitRejectsOversizedPayloads(t *testing.T) {
 	repo := newMemoryRepository()
 	handler := newTestHandler(t, repo)
@@ -621,6 +755,7 @@ type memoryRepository struct {
 	attachments      map[int64]*models.Attachment
 	domains          []*models.Domain
 	sessions         map[string]*models.Session
+	settings         map[string]string
 	pingErr          error
 }
 
@@ -636,6 +771,7 @@ func newMemoryRepository() *memoryRepository {
 		emails:           map[int64]*models.Email{},
 		attachments:      map[int64]*models.Attachment{},
 		sessions:         map[string]*models.Session{},
+		settings:         map[string]string{},
 	}
 	// Seed the default test domain so inbox addresses resolve to example.test.
 	_, _ = m.CreateDomain(context.Background(), "example.test")
@@ -953,6 +1089,19 @@ func (m *memoryRepository) DeleteExpiredSessions(context.Context) (int64, error)
 		}
 	}
 	return deleted, nil
+}
+
+func (m *memoryRepository) GetSetting(_ context.Context, key string) (string, error) {
+	value, ok := m.settings[key]
+	if !ok {
+		return "", repository.ErrNotFound
+	}
+	return value, nil
+}
+
+func (m *memoryRepository) SetSetting(_ context.Context, key, value string) error {
+	m.settings[key] = value
+	return nil
 }
 
 func (m *memoryRepository) Ping(context.Context) error { return m.pingErr }

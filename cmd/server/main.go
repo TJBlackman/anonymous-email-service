@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"anonymous-email-service/internal/auth"
 	"anonymous-email-service/internal/config"
 	"anonymous-email-service/internal/ratelimit"
 	"anonymous-email-service/internal/repository"
@@ -40,7 +39,7 @@ func run() error {
 	inboxCreateLimiter := ratelimit.NewFixedWindowLimiter(cfg.InboxCreateLimitPerHour, time.Hour)
 	smtpConnectionLimiter := ratelimit.NewFixedWindowLimiter(cfg.SMTPConnectionLimitPerMin, time.Minute)
 
-	repo, err := repository.NewSQLite(cfg.DatabasePath)
+	repo, err := repository.NewSQLite(cfg.DatabasePath, cfg.MigrationsDir)
 	if err != nil {
 		return err
 	}
@@ -50,10 +49,7 @@ func run() error {
 		return err
 	}
 
-	adminPasswordHash, err := resolveAdminCredentials(cfg, logger)
-	if err != nil {
-		return err
-	}
+	logAdminStatus(context.Background(), repo, cfg.AdminUsername, logger)
 
 	handler, err := web.RegisterRoutes(repo, logger, "templates", web.Options{
 		DefaultDomain:      cfg.Domain,
@@ -61,7 +57,6 @@ func run() error {
 		SessionTTL:         cfg.SessionTTL,
 		BcryptCost:         cfg.BcryptCost,
 		AdminUsername:      cfg.AdminUsername,
-		AdminPasswordHash:  adminPasswordHash,
 		CreateInboxLimiter: inboxCreateLimiter,
 	})
 	if err != nil {
@@ -132,21 +127,25 @@ func run() error {
 	return firstErr
 }
 
-// resolveAdminCredentials hashes the configured admin password for use by the
-// admin auth realm. Both ADMIN_USERNAME and ADMIN_PASSWORD must be set to enable
-// the admin area; otherwise it logs a warning and returns an empty hash, leaving
-// /admin disabled rather than open.
-func resolveAdminCredentials(cfg *config.Config, logger *slog.Logger) (string, error) {
-	if cfg.AdminUsername == "" || cfg.AdminPassword == "" {
-		logger.Warn("admin credentials not configured; /admin is disabled (set ADMIN_USERNAME and ADMIN_PASSWORD to enable)")
-		return "", nil
+// logAdminStatus reports at startup whether the admin area is reachable and, if
+// so, whether a password has been set yet. The admin password is never read from
+// the environment: when ADMIN_USERNAME is set but no password is stored, the
+// first visitor to /admin is prompted to choose one (a one-time setup flow).
+func logAdminStatus(ctx context.Context, repo repository.Repository, adminUsername string, logger *slog.Logger) {
+	if adminUsername == "" {
+		logger.Warn("admin area disabled; set ADMIN_USERNAME to enable /admin")
+		return
 	}
 
-	hash, err := auth.HashPassword(cfg.AdminPassword, cfg.BcryptCost)
-	if err != nil {
-		return "", err
+	_, err := repo.GetSetting(ctx, web.AdminPasswordHashKey)
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		logger.Warn("admin password not set; the first visitor to /admin will be prompted to choose one", "username", adminUsername)
+	case err != nil:
+		logger.Error("could not read admin password setting", "error", err)
+	default:
+		logger.Info("admin area enabled", "username", adminUsername)
 	}
-	return hash, nil
 }
 
 // seedDomain inserts the optional DOMAIN bootstrap seed as the first enabled

@@ -93,11 +93,12 @@ func withInbox(ctx context.Context, inbox *models.Inbox) context.Context {
 }
 
 // createInbox provisions a new mailbox account on the chosen domain with the
-// given bcrypt password hash. An empty domain (or one that is not currently
-// enabled) falls back to the default enabled domain. Registered mailboxes are
-// accounts, so they are created with the never-expires sentinel. Returns
-// errNoDomainAvailable when no enabled domain exists.
-func (a *app) createInbox(ctx context.Context, clientAddr, domain, passwordHash string) (*models.Inbox, error) {
+// given (already-validated, normalized) local part and bcrypt password hash. An
+// empty domain (or one that is not currently enabled) falls back to the default
+// enabled domain. Registered mailboxes are accounts, so they are created with
+// the never-expires sentinel. Returns errNoDomainAvailable when no enabled
+// domain exists, and repository.ErrConflict when the address is already claimed.
+func (a *app) createInbox(ctx context.Context, clientAddr, domain, localPart, passwordHash string) (*models.Inbox, error) {
 	if limiter := a.options.CreateInboxLimiter; limiter != nil {
 		decision := limiter.Allow(clientAddr)
 		if !decision.Allowed {
@@ -113,26 +114,17 @@ func (a *app) createInbox(ctx context.Context, clientAddr, domain, passwordHash 
 		return nil, errNoDomainAvailable
 	}
 
-	for range 5 {
-		localPart := generateLocalPart()
-		inbox := &models.Inbox{
-			Address:      fmt.Sprintf("%s@%s", localPart, effectiveDomain),
-			LocalPart:    localPart,
-			Token:        uuid.NewString(),
-			PasswordHash: passwordHash,
-			ExpiresAt:    neverExpires,
-		}
-
-		err := a.repo.CreateInbox(ctx, inbox)
-		if err == nil {
-			return inbox, nil
-		}
-		if !errors.Is(err, repository.ErrConflict) {
-			return nil, err
-		}
+	inbox := &models.Inbox{
+		Address:      fmt.Sprintf("%s@%s", localPart, effectiveDomain),
+		LocalPart:    localPart,
+		Token:        uuid.NewString(),
+		PasswordHash: passwordHash,
+		ExpiresAt:    neverExpires,
 	}
-
-	return nil, fmt.Errorf("create inbox: exhausted retries")
+	if err := a.repo.CreateInbox(ctx, inbox); err != nil {
+		return nil, err
+	}
+	return inbox, nil
 }
 
 // resolveCreateDomain validates a requested domain against the enabled set,
@@ -150,10 +142,6 @@ func (a *app) resolveCreateDomain(ctx context.Context, requested string) (string
 		}
 	}
 	return a.defaultDomain(ctx)
-}
-
-func generateLocalPart() string {
-	return strings.ReplaceAll(strings.ToLower(uuid.NewString()), "-", "")[:12]
 }
 
 // sessionCookieName is the mailbox session cookie name. The __Host- prefix is

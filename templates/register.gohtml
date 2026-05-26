@@ -1,8 +1,8 @@
 {{define "content"}}
 <section class="panel">
     <h2>Create an email address</h2>
-    <p class="muted">We generate a random address and a one-time password for you.
-    The password is shown only once after you create the address.</p>
+    <p class="muted">Pick a name for your address and a domain. We generate a
+    one-time password for you, shown only once after you create the address.</p>
 
     {{if .Error}}
     <p class="empty-state" role="alert">{{.Error}}</p>
@@ -10,6 +10,11 @@
 
     {{if .Domains}}
     <form method="post" action="/register" class="auth-form">
+        <label for="local_part">Address name</label>
+        <input type="text" id="local_part" name="local_part"
+               value="{{.LocalPart}}" required
+               pattern="[A-Za-z0-9]+" maxlength="64"
+               autocomplete="off" autocapitalize="off" spellcheck="false">
         <label for="domain">Domain</label>
         <select id="domain" name="domain">
             {{range .Domains}}

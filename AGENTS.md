@@ -5,3 +5,5 @@ WSL2 is running Ubuntu 22.04.4
 This is a greenfield project with 0 users. Anything can be changed at any time.
 Git commands should be run in windows powershell, not WSL2.
 Read the entire README.md file.
+When running Go commands, use WSL via this command; wsl -u trevor
+Comment should be top-level, and very concise

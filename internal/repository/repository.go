@@ -44,6 +44,9 @@ type Repository interface {
 	TouchSession(ctx context.Context, token string, expiresAt time.Time) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 
+	GetSetting(ctx context.Context, key string) (string, error)
+	SetSetting(ctx context.Context, key, value string) error
+
 	Ping(ctx context.Context) error
 	Close() error
 }

@@ -2,15 +2,21 @@ services:
   app:
     build: .
     ports:
-      - "25:25"
+      - "8025:8025"
       - "8080:8080"
     environment:
       DOMAIN: example.test
-      SMTP_LISTEN_ADDR: :25
+      SMTP_LISTEN_ADDR: :8025
       HTTP_LISTEN_ADDR: :8080
       DATABASE_PATH: /app/data/mail.db
+      MIGRATIONS_DIR: /app/migrations
+      # Enables the /admin area. There is no ADMIN_PASSWORD: on first run, visit
+      # /admin and set the password via the one-time setup page. The hash is
+      # persisted in the database (mail_data volume).
+      ADMIN_USERNAME: admin
     volumes:
       - mail_data:/app/data
+      - ./migrations:/app/migrations:ro
     restart: unless-stopped
 
 volumes:

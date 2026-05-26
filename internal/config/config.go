@@ -20,6 +20,7 @@ type Config struct {
 	SMTPListenAddr            string
 	HTTPListenAddr            string
 	DatabasePath              string
+	MigrationsDir             string
 	InboxTTL                  time.Duration
 	MaxEmailSize              int64
 	MaxAttachmentSize         int64
@@ -28,7 +29,6 @@ type Config struct {
 	SessionTTL                time.Duration
 	BcryptCost                int
 	AdminUsername             string
-	AdminPassword             string
 	InboxCreateLimitPerHour   int
 	SMTPConnectionLimitPerMin int
 	LogLevel                  string
@@ -39,6 +39,7 @@ const (
 	defaultSMTPListenAddr            = ":25"
 	defaultHTTPListenAddr            = ":8080"
 	defaultDatabasePath              = "./data/mail.db"
+	defaultMigrationsDir             = "./migrations"
 	defaultInboxTTLDays              = 60
 	defaultMaxEmailSizeMB            = 10
 	defaultMaxAttachSizeMB           = 5
@@ -63,6 +64,7 @@ func Load() (*Config, error) {
 	smtpListenAddr, smtpErr := loadListenAddr("SMTP_LISTEN_ADDR", defaultSMTPListenAddr)
 	httpListenAddr, httpErr := loadListenAddr("HTTP_LISTEN_ADDR", defaultHTTPListenAddr)
 	databasePath, databasePathErr := loadDatabasePath()
+	migrationsDir, migrationsDirErr := loadMigrationsDir()
 	inboxTTLDays, inboxTTLErr := loadNonNegativeInt("INBOX_TTL_DAYS", defaultInboxTTLDays)
 	maxEmailSizeMB, maxEmailSizeErr := loadPositiveInt("MAX_EMAIL_SIZE_MB", defaultMaxEmailSizeMB)
 	maxAttachmentSizeMB, maxAttachmentSizeErr := loadPositiveInt("MAX_ATTACHMENT_MB", defaultMaxAttachSizeMB)
@@ -71,7 +73,6 @@ func Load() (*Config, error) {
 	sessionTTLDays, sessionTTLErr := loadPositiveInt("SESSION_TTL_DAYS", defaultSessionTTLDays)
 	bcryptCost, bcryptCostErr := loadBcryptCost()
 	adminUsername, _ := loadTrimmedString("ADMIN_USERNAME", "", false)
-	adminPassword := os.Getenv("ADMIN_PASSWORD")
 	inboxCreateLimitPerHour, inboxCreateLimitErr := loadNonNegativeInt("INBOX_CREATE_LIMIT_PER_HOUR", defaultInboxCreateLimitPerHour)
 	smtpConnectionLimitPerMin, smtpConnectionLimitErr := loadPositiveInt("SMTP_CONNECTION_LIMIT_PER_MIN", defaultSMTPConnectionLimitPerMin)
 	logLevel, logLevelErr := loadLogLevel()
@@ -81,6 +82,7 @@ func Load() (*Config, error) {
 		smtpErr,
 		httpErr,
 		databasePathErr,
+		migrationsDirErr,
 		inboxTTLErr,
 		maxEmailSizeErr,
 		maxAttachmentSizeErr,
@@ -107,6 +109,7 @@ func Load() (*Config, error) {
 		SMTPListenAddr:            smtpListenAddr,
 		HTTPListenAddr:            httpListenAddr,
 		DatabasePath:              databasePath,
+		MigrationsDir:             migrationsDir,
 		InboxTTL:                  time.Duration(inboxTTLDays) * 24 * time.Hour,
 		MaxEmailSize:              int64(maxEmailSizeMB) * 1024 * 1024,
 		MaxAttachmentSize:         int64(maxAttachmentSizeMB) * 1024 * 1024,
@@ -115,7 +118,6 @@ func Load() (*Config, error) {
 		SessionTTL:                time.Duration(sessionTTLDays) * 24 * time.Hour,
 		BcryptCost:                bcryptCost,
 		AdminUsername:             adminUsername,
-		AdminPassword:             adminPassword,
 		InboxCreateLimitPerHour:   inboxCreateLimitPerHour,
 		SMTPConnectionLimitPerMin: smtpConnectionLimitPerMin,
 		LogLevel:                  logLevel,
@@ -178,6 +180,14 @@ func loadDatabasePath() (string, error) {
 	value, usedDefault := loadTrimmedString("DATABASE_PATH", defaultDatabasePath, false)
 	if !usedDefault && value == "" {
 		return "", fmt.Errorf("DATABASE_PATH must not be blank")
+	}
+	return value, nil
+}
+
+func loadMigrationsDir() (string, error) {
+	value, usedDefault := loadTrimmedString("MIGRATIONS_DIR", defaultMigrationsDir, false)
+	if !usedDefault && value == "" {
+		return "", fmt.Errorf("MIGRATIONS_DIR must not be blank")
 	}
 	return value, nil
 }

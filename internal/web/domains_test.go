@@ -27,7 +27,7 @@ func TestRegisterUsesSelectedDomain(t *testing.T) {
 	}
 	handler := newTestHandlerWithOptions(t, repo, registerOptions())
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=second.test"))
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("local_part=adam&domain=second.test"))
 	req.Header.Set("Origin", "http://service.test")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -56,7 +56,7 @@ func TestRegisterFallsBackWhenDomainDisabled(t *testing.T) {
 	}
 	handler := newTestHandlerWithOptions(t, repo, registerOptions())
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain=second.test"))
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("local_part=adam&domain=second.test"))
 	req.Header.Set("Origin", "http://service.test")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -110,7 +110,7 @@ func TestRegisterFailsWithNoDomains(t *testing.T) {
 	// No seeded domain and no DefaultDomain option.
 	handler := newTestHandlerWithOptions(t, repo, Options{SessionTTL: 7 * 24 * time.Hour, BcryptCost: bcrypt.MinCost})
 
-	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("domain="))
+	req := httptest.NewRequest(http.MethodPost, "http://service.test/register", strings.NewReader("local_part=adam&domain="))
 	req.Header.Set("Origin", "http://service.test")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()

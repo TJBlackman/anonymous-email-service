@@ -36,6 +36,7 @@ The server reads configuration from environment variables at startup. All values
 - `MAX_ATTACHMENT_MB`: default `5`
 - `CLEANUP_INTERVAL_MIN`: default `15` — how often the background worker purges expired inboxes
 - `COOKIE_SECURE`: default `false`
+- `ADMIN_USERNAME`: enables the `/admin` area. When unset, `/admin` returns `503` and is fully disabled. There is **no** `ADMIN_PASSWORD` env: the password is set once via a first-run setup page (see Admin Access below).
 - `INBOX_CREATE_LIMIT_PER_HOUR`: default `2`. Set to `0` to disable the limit (unlimited).
 - `SMTP_CONNECTION_LIMIT_PER_MIN`: default `30`
 - `LOG_LEVEL`: default `info`
@@ -60,7 +61,16 @@ The service supports several sending domains at once.
 - Disabling a domain removes it from the dropdown and stops new inboxes from being created on it, but existing inboxes on that domain keep receiving mail until they expire.
 - Inbound SMTP accepts mail for any currently enabled domain. The recipient domain is validated per message against the database (with a short in-process cache), so newly added domains start accepting mail within ~30 seconds without a restart.
 
-> **⚠️ Launch blocker: the `/admin` page has NO authentication.** Anyone who can reach the HTTP port can add or disable domains. Do not expose this service publicly until authentication is added to the single `adminGuard` chokepoint in `internal/web/admin.go`.
+## Admin Access
+
+The `/admin` area is gated by a separate operator credential, unrelated to mailbox accounts.
+
+- Set `ADMIN_USERNAME` to enable `/admin`. With it unset, the entire area returns `503`.
+- The admin password is **not** supplied via the environment. On first run, the first visitor to `/admin` is redirected to `/admin/setup` and prompted to choose a password (minimum 12 characters). The bcrypt hash is persisted in the database (`settings` table), so it survives restarts.
+- Once a password is set, `/admin/setup` is closed and `/admin` requires logging in at `/admin/login`. Admin sessions are in-memory with a sliding 1-hour expiry and reset on restart.
+- To reset a forgotten admin password, delete the `admin_password_hash` row from the `settings` table; the setup flow re-opens on next visit.
+
+> **⚠️ First-run setup is open until claimed.** Whoever reaches `/admin` first sets the password. Set it immediately after the first deploy, before exposing the HTTP port publicly.
 
 Cookie behavior:
 
@@ -86,7 +96,7 @@ Use WSL2 as required by `AGENTS.md`:
 ```bash
 wsl -u trevor
 cd /mnt/c/Users/Trevor/Desktop/anonymous-email-service
-export DOMAIN=example.test
+export SMTP_LISTEN_ADDR=":8025"
 go run ./cmd/server
 ```
 
@@ -119,7 +129,7 @@ docker run --rm \
 ## Current Limits
 
 - Rate limiting and the SMTP domain cache are in-memory and scoped to a single process
-- The `/admin` domain management UI is currently unauthenticated (see Multiple Domains)
+- Admin sessions are in-memory and reset on restart; the admin login is a single operator credential and is not rate limited (see Admin Access)
 - Inbox ownership is session-cookie based; there is no account system
 - HTML email bodies are sanitized before rendering and may lose unsupported markup
 - The provided Docker assets expose the app ports only; external networking, TLS, DNS, and reverse proxying are expected to be handled outside the container
@@ -133,12 +143,13 @@ docker run --rm \
 - Inbox ownership is token-based and enforced with `HttpOnly` cookies, `SameSite=Lax`, and optional secure `__Host-` cookie semantics when `COOKIE_SECURE=true`
 - Email and attachment access is ID-based and checked against the current inbox, which prevents path-style traversal and cross-inbox object access
 - Message views, attachment downloads, and delete actions all enforce inbox-scoped ownership checks to reduce information disclosure between inboxes
+- The admin password is stored only as a bcrypt hash in the database and is never read from the environment; admin login compares the username in constant time and verifies the password against the stored hash
 
 ## Future Enhancements
 
 These items are not implemented today and remain out of scope for the current service:
 
-- Authentication for the `/admin` domain management UI (currently unauthenticated — see Multiple Domains)
+- Rate limiting / lockout on admin login attempts
 - Custom inbox addresses
 - Email forwarding
 - API key authentication for programmatic access

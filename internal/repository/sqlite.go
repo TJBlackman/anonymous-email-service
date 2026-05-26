@@ -16,11 +16,18 @@ import (
 )
 
 type SQLite struct {
-	path string
-	db   *sql.DB
+	path          string
+	migrationsDir string
+	db            *sql.DB
 }
 
-func NewSQLite(path string) (Repository, error) {
+// NewSQLite opens the SQLite database at path and applies migrations from
+// migrationsDir. When migrationsDir is empty, the migrations directory is
+// resolved relative to this source file via runtime.Caller, which keeps tests
+// working from the source tree but is unsuitable for a compiled binary (the
+// source path does not exist in the deployment image) — production callers
+// should pass an explicit directory.
+func NewSQLite(path, migrationsDir string) (Repository, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
@@ -34,8 +41,9 @@ func NewSQLite(path string) (Repository, error) {
 	db.SetMaxIdleConns(1)
 
 	store := &SQLite{
-		path: path,
-		db:   db,
+		path:          path,
+		migrationsDir: migrationsDir,
+		db:            db,
 	}
 
 	if err := store.init(context.Background()); err != nil {
@@ -51,8 +59,8 @@ func (s *SQLite) init(ctx context.Context) error {
 		return fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
 
-	for _, name := range []string{"001_initial.sql", "002_domains.sql", "003_sessions.sql"} {
-		migration, err := loadMigration(name)
+	for _, name := range []string{"001_initial.sql", "002_domains.sql", "003_sessions.sql", "004_settings.sql"} {
+		migration, err := s.loadMigration(name)
 		if err != nil {
 			return err
 		}
@@ -69,13 +77,19 @@ func (s *SQLite) execScript(ctx context.Context, script string) error {
 	return err
 }
 
-func loadMigration(name string) (string, error) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return "", fmt.Errorf("resolve migration path: runtime.Caller failed")
+func (s *SQLite) loadMigration(name string) (string, error) {
+	dir := s.migrationsDir
+	if dir == "" {
+		// Fallback for source-tree callers (e.g. tests): resolve relative to
+		// this file. This does not work from a compiled binary.
+		_, file, _, ok := runtime.Caller(0)
+		if !ok {
+			return "", fmt.Errorf("resolve migration path: runtime.Caller failed")
+		}
+		dir = filepath.Join(filepath.Dir(file), "..", "..", "migrations")
 	}
 
-	path := filepath.Join(filepath.Dir(file), "..", "..", "migrations", name)
+	path := filepath.Join(dir, name)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read migration %q: %w", path, err)
@@ -532,6 +546,34 @@ func (s *SQLite) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	}
 
 	return rows, nil
+}
+
+// GetSetting returns the value for a settings key. It returns ErrNotFound when
+// the key has never been set.
+func (s *SQLite) GetSetting(ctx context.Context, key string) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT value
+		FROM settings
+		WHERE key = ?
+	`, key).Scan(&value)
+	if err != nil {
+		return "", mapScanError("get setting", err)
+	}
+	return value, nil
+}
+
+// SetSetting upserts a settings key/value, refreshing updated_at.
+func (s *SQLite) SetSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO settings (key, value, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+	`, key, value, nowUnix())
+	if err != nil {
+		return fmt.Errorf("set setting: %w", err)
+	}
+	return nil
 }
 
 func (s *SQLite) Close() error {

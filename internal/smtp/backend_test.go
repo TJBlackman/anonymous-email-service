@@ -64,7 +64,7 @@ func TestSessionRcptRejectsInvalidAddress(t *testing.T) {
 	session := &Session{
 		backend: &Backend{
 			domains: newDomainCache(domainCacheTTL),
-			repo:   &stubRepository{},
+			repo:    &stubRepository{},
 		},
 	}
 
@@ -86,7 +86,7 @@ func TestSessionRcptRejectsRelay(t *testing.T) {
 	session := &Session{
 		backend: &Backend{
 			domains: newDomainCache(domainCacheTTL),
-			repo:   &stubRepository{},
+			repo:    &stubRepository{},
 		},
 	}
 
@@ -116,7 +116,7 @@ func TestSessionRcptAcceptsConfiguredDomain(t *testing.T) {
 	session := &Session{
 		backend: &Backend{
 			domains: newDomainCache(domainCacheTTL),
-			repo:   repo,
+			repo:    repo,
 		},
 	}
 
@@ -136,7 +136,7 @@ func TestSessionRcptRejectsUnknownInbox(t *testing.T) {
 	session := &Session{
 		backend: &Backend{
 			domains: newDomainCache(domainCacheTTL),
-			repo:   &stubRepository{},
+			repo:    &stubRepository{},
 		},
 	}
 
@@ -402,8 +402,12 @@ func (s *stubRepository) CreateSession(context.Context, *models.Session) error {
 func (s *stubRepository) GetSession(context.Context, string) (*models.Session, *models.Inbox, error) {
 	return nil, nil, nil
 }
-func (s *stubRepository) DeleteSession(context.Context, string) error            { return nil }
-func (s *stubRepository) TouchSession(context.Context, string, time.Time) error  { return nil }
-func (s *stubRepository) DeleteExpiredSessions(context.Context) (int64, error)   { return 0, nil }
-func (s *stubRepository) Ping(context.Context) error                             { return nil }
-func (s *stubRepository) Close() error                                           { return nil }
+func (s *stubRepository) DeleteSession(context.Context, string) error           { return nil }
+func (s *stubRepository) TouchSession(context.Context, string, time.Time) error { return nil }
+func (s *stubRepository) DeleteExpiredSessions(context.Context) (int64, error)  { return 0, nil }
+func (s *stubRepository) GetSetting(context.Context, string) (string, error) {
+	return "", repository.ErrNotFound
+}
+func (s *stubRepository) SetSetting(context.Context, string, string) error { return nil }
+func (s *stubRepository) Ping(context.Context) error                       { return nil }
+func (s *stubRepository) Close() error                                     { return nil }
